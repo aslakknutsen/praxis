@@ -10,6 +10,8 @@
 pub mod config;
 /// Upstream connection options and endpoint types.
 pub mod connectivity;
+/// Gateway xDS (gwxds) neutral schema and translator.
+pub mod gwxds;
 /// Error types shared across the workspace.
 pub mod errors;
 /// Shared health state types for active health checking.

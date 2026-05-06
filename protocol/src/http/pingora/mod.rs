@@ -44,6 +44,17 @@ impl Protocol for PingoraHttp {
             .collect();
 
         if http_listeners.is_empty() {
+            // Admin health (`/healthy`, `/ready`) is HTTP-on-Pingora. gwxds can deliver an empty
+            // first push (no listeners yet); we still must bind admin or Kubernetes probes fail
+            // after preflight releases the port.
+            if let Some(admin_addr) = &config.admin.address {
+                health::add_health_endpoint_to_pingora_server(
+                    server.server_mut(),
+                    admin_addr,
+                    None,
+                    config.admin.verbose,
+                );
+            }
             return Ok(Vec::new());
         }
 

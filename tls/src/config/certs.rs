@@ -14,6 +14,10 @@ use crate::TlsError;
 
 /// A certificate and private key pair.
 ///
+/// Normally configured via YAML with `cert_path` / `key_path` pointing to
+/// files on disk. For programmatic use (e.g. gwxds inline cert delivery),
+/// construct with [`CertKeyPair::from_pem`] to supply raw PEM bytes directly.
+///
 /// ```
 /// use praxis_tls::CertKeyPair;
 ///
@@ -35,6 +39,8 @@ use crate::TlsError;
 #[serde(deny_unknown_fields)]
 pub struct CertKeyPair {
     /// Path to the PEM certificate file.
+    ///
+    /// Empty when using inline PEM via [`CertKeyPair::from_pem`].
     pub cert_path: String,
 
     /// Whether this certificate is the default fallback for unmatched SNI.
@@ -45,18 +51,45 @@ pub struct CertKeyPair {
     pub default: bool,
 
     /// Path to the PEM private key file.
+    ///
+    /// Empty when using inline PEM via [`CertKeyPair::from_pem`].
     pub key_path: String,
 
     /// SNI hostnames this certificate serves (listener only).
     #[serde(default)]
     pub server_names: Vec<String>,
+
+    /// Inline certificate PEM bytes. When set, takes precedence over `cert_path`.
+    ///
+    /// Not exposed in YAML config; populated by [`CertKeyPair::from_pem`].
+    #[serde(skip)]
+    pub cert_pem_bytes: Option<Vec<u8>>,
+
+    /// Inline private key PEM bytes. When set, takes precedence over `key_path`.
+    ///
+    /// Not exposed in YAML config; populated by [`CertKeyPair::from_pem`].
+    #[serde(skip)]
+    pub key_pem_bytes: Option<Vec<u8>>,
 }
 
 impl CertKeyPair {
+    /// Construct a [`CertKeyPair`] from raw PEM bytes rather than file paths.
+    ///
+    /// Used by the gwxds translator when istiod delivers certificates inline.
+    pub fn from_pem(cert: Vec<u8>, key: Vec<u8>) -> Self {
+        Self {
+            cert_path: String::new(),
+            key_path: String::new(),
+            default: false,
+            server_names: Vec::new(),
+            cert_pem_bytes: Some(cert),
+            key_pem_bytes: Some(key),
+        }
+    }
+
     /// Validate paths: reject `..` traversal.
     ///
-    /// Absolute paths are allowed because operators commonly use
-    /// paths like `/etc/ssl/certs/server.pem` in production.
+    /// Skipped automatically when inline PEM bytes are present (no paths to validate).
     ///
     /// # Errors
     ///
@@ -64,6 +97,9 @@ impl CertKeyPair {
     ///
     /// [`TlsError::PathTraversal`]: crate::TlsError::PathTraversal
     pub fn validate(&self) -> Result<(), TlsError> {
+        if self.cert_pem_bytes.is_some() {
+            return Ok(());
+        }
         for (field, path) in [("cert_path", &self.cert_path), ("key_path", &self.key_path)] {
             if has_parent_dir_component(path) {
                 return Err(TlsError::PathTraversal {
@@ -83,6 +119,9 @@ impl CertKeyPair {
 
 /// CA trust configuration for peer certificate verification.
 ///
+/// Normally configured via YAML with `ca_path` pointing to a file on disk.
+/// For programmatic use, construct with [`CaConfig::from_pem`].
+///
 /// ```
 /// use praxis_tls::CaConfig;
 ///
@@ -93,11 +132,31 @@ impl CertKeyPair {
 #[serde(deny_unknown_fields)]
 pub struct CaConfig {
     /// Path to the PEM CA certificate file.
+    ///
+    /// Empty when using inline PEM via [`CaConfig::from_pem`].
     pub ca_path: String,
+
+    /// Inline CA PEM bytes. When set, takes precedence over `ca_path`.
+    ///
+    /// Not exposed in YAML config; populated by [`CaConfig::from_pem`].
+    #[serde(skip)]
+    pub ca_pem_bytes: Option<Vec<u8>>,
 }
 
 impl CaConfig {
+    /// Construct a [`CaConfig`] from raw CA PEM bytes rather than a file path.
+    ///
+    /// Used by the gwxds translator when istiod delivers CA certificates inline.
+    pub fn from_pem(ca: Vec<u8>) -> Self {
+        Self {
+            ca_path: String::new(),
+            ca_pem_bytes: Some(ca),
+        }
+    }
+
     /// Validate the CA path: reject `..` traversal.
+    ///
+    /// Skipped automatically when inline PEM bytes are present.
     ///
     /// # Errors
     ///
@@ -105,6 +164,9 @@ impl CaConfig {
     ///
     /// [`TlsError::PathTraversal`]: crate::TlsError::PathTraversal
     pub fn validate(&self) -> Result<(), TlsError> {
+        if self.ca_pem_bytes.is_some() {
+            return Ok(());
+        }
         if has_parent_dir_component(&self.ca_path) {
             return Err(TlsError::PathTraversal {
                 field: "ca_path".to_owned(),
@@ -134,6 +196,8 @@ mod tests {
             default: false,
             key_path: tmp.key.clone(),
             server_names: Vec::new(),
+            cert_pem_bytes: None,
+            key_pem_bytes: None,
         };
         assert!(pair.validate().is_ok(), "existing paths should validate");
     }
@@ -178,6 +242,7 @@ mod tests {
         let tmp = temp_cert_key_ca();
         let ca = CaConfig {
             ca_path: tmp.ca.clone(),
+            ca_pem_bytes: None,
         };
         assert!(ca.validate().is_ok(), "existing ca_path should validate");
     }
@@ -186,6 +251,7 @@ mod tests {
     fn ca_config_rejects_traversal() {
         let ca = CaConfig {
             ca_path: "/etc/../../evil.pem".to_owned(),
+            ca_pem_bytes: None,
         };
         assert!(ca.validate().is_err(), "traversal in ca_path should fail validation");
     }

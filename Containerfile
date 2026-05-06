@@ -8,7 +8,7 @@ FROM rust:1.94-alpine AS builder
 
 ENV OPENSSL_STATIC=1
 
-RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconf cmake make g++
+RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconf cmake make g++ protoc
 
 WORKDIR /src
 
@@ -23,10 +23,13 @@ WORKDIR /src
 
 COPY Cargo.toml Cargo.lock ./
 COPY core/Cargo.toml core/Cargo.toml
+COPY core/build.rs core/build.rs
+COPY core/proto core/proto
 COPY filter/Cargo.toml filter/Cargo.toml
 COPY protocol/Cargo.toml protocol/Cargo.toml
 COPY tls/Cargo.toml tls/Cargo.toml
 COPY server/Cargo.toml server/Cargo.toml
+COPY xds-client/Cargo.toml xds-client/Cargo.toml
 
 # Strip workspace members not needed for the praxis binary
 # so we don't need their Cargo.toml files.
@@ -36,11 +39,13 @@ RUN mkdir -p core/src \
     protocol/src \
     tls/src \
     server/src \
+    xds-client/src \
     && echo '//! stub' > core/src/lib.rs \
     && echo '//! stub' > filter/src/lib.rs \
     && echo '//! stub' > protocol/src/lib.rs \
     && echo '//! stub' > tls/src/lib.rs \
     && echo '//! stub' > server/src/lib.rs \
+    && echo '//! stub' > xds-client/src/lib.rs \
     && printf '//! stub\nfn main() {}\n' > server/src/main.rs
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
@@ -58,12 +63,13 @@ COPY filter/src filter/src
 COPY protocol/src protocol/src
 COPY tls/src tls/src
 COPY server/src server/src
+COPY xds-client/src xds-client/src
 COPY examples examples
 
 # Touch the lib/main files so cargo sees them as newer than
 # the cached stub artifacts.
 RUN find core/src filter/src \
-    protocol/src tls/src server/src \
+    protocol/src tls/src server/src xds-client/src \
     -name '*.rs' -exec touch {} +
 
 # ------------------------------------------------------------------------------

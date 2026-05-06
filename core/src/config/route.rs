@@ -13,6 +13,12 @@ use serde::{Deserialize, Serialize};
 
 /// A routing rule mapping requests to a cluster.
 ///
+/// Exactly one of `path_prefix`, `path_exact`, or `path_regex` should be set.
+/// When none of the exact/regex fields are set, `path_prefix` is used (the
+/// longest matching prefix wins). When `path_exact` is set, `path_prefix` is
+/// ignored for path matching. When `path_regex` is set, it is matched against
+/// the full request path.
+///
 /// ```
 /// use praxis_core::config::Route;
 ///
@@ -32,7 +38,25 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct Route {
     /// Path prefix to match. The longest matching prefix wins.
+    ///
+    /// Used when neither `path_exact` nor `path_regex` are set. Defaults to
+    /// `"/"` (match all paths) when constructing routes programmatically where
+    /// `path_exact` or `path_regex` provides the real path constraint.
     pub path_prefix: String,
+
+    /// Exact path to match. When set, takes precedence over `path_prefix`.
+    #[serde(default)]
+    pub path_exact: Option<String>,
+
+    /// Regex pattern to match against the full request path.
+    /// When set, takes precedence over `path_prefix` (but not `path_exact`).
+    #[serde(default)]
+    pub path_regex: Option<String>,
+
+    /// HTTP methods to match (e.g. `["GET", "POST"]`). When set, the route
+    /// only matches requests using one of the listed methods.
+    #[serde(default)]
+    pub methods: Option<Vec<String>>,
 
     /// Host to match. If set, the route only applies to this host.
     #[serde(default)]

@@ -64,6 +64,34 @@ impl CachedCaCerts {
         tracing::info!(ca_path, count = certs.len(), "cached CA certificates");
         Ok(Self::new(certs))
     }
+
+    /// Parse inline PEM bytes into cached DER certificates.
+    ///
+    /// Used when CA certificates are delivered inline (e.g. by the gwxds controller).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TlsError`] if the PEM data contains no valid certificates.
+    ///
+    /// [`TlsError`]: crate::TlsError
+    pub fn from_pem_bytes(pem: &[u8]) -> Result<Self, TlsError> {
+        let certs = rustls_pemfile::certs(&mut &pem[..])
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| TlsError::FileLoadError {
+                path: "<inline>".to_owned(),
+                detail: e.to_string(),
+            })
+            .map(|certs| certs.into_iter().map(|c| c.to_vec()).collect::<Vec<_>>())?;
+
+        if certs.is_empty() {
+            return Err(TlsError::FileLoadError {
+                path: "<inline>".to_owned(),
+                detail: "no certificates found in inline CA PEM".to_owned(),
+            });
+        }
+
+        Ok(Self::new(certs))
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -121,6 +149,38 @@ impl CachedClientCert {
         tracing::info!(cert_path, "cached client certificate");
         Ok(Self::new(cert_der, key_der))
     }
+
+    /// Parse inline PEM bytes for both cert and key.
+    ///
+    /// Used when client certificates are delivered inline (e.g. by the gwxds controller).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TlsError`] if either PEM slice contains no valid data.
+    ///
+    /// [`TlsError`]: crate::TlsError
+    pub fn from_pem_bytes(cert_pem: &[u8], key_pem: &[u8]) -> Result<Self, TlsError> {
+        let cert_der = rustls_pemfile::certs(&mut &cert_pem[..])
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| TlsError::FileLoadError {
+                path: "<inline cert>".to_owned(),
+                detail: e.to_string(),
+            })
+            .map(|certs| certs.into_iter().map(|c| c.to_vec()).collect::<Vec<_>>())?;
+
+        let key_der = rustls_pemfile::private_key(&mut &key_pem[..])
+            .map_err(|e| TlsError::FileLoadError {
+                path: "<inline key>".to_owned(),
+                detail: e.to_string(),
+            })?
+            .ok_or_else(|| TlsError::FileLoadError {
+                path: "<inline key>".to_owned(),
+                detail: "no private key found in inline PEM".to_owned(),
+            })
+            .map(|k| k.secret_der().to_vec())?;
+
+        Ok(Self::new(cert_der, key_der))
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -174,13 +234,25 @@ impl CachedClusterTls {
         let ca = tls
             .ca
             .as_ref()
-            .map(|c| CachedCaCerts::from_pem_file(&c.ca_path).map(Arc::new))
+            .map(|c| {
+                if let Some(pem) = &c.ca_pem_bytes {
+                    CachedCaCerts::from_pem_bytes(pem).map(Arc::new)
+                } else {
+                    CachedCaCerts::from_pem_file(&c.ca_path).map(Arc::new)
+                }
+            })
             .transpose()?;
 
         let client_cert = tls
             .client_cert
             .as_ref()
-            .map(|c| CachedClientCert::from_pem_files(&c.cert_path, &c.key_path).map(Arc::new))
+            .map(|c| {
+                if let (Some(cert), Some(key)) = (&c.cert_pem_bytes, &c.key_pem_bytes) {
+                    CachedClientCert::from_pem_bytes(cert, key).map(Arc::new)
+                } else {
+                    CachedClientCert::from_pem_files(&c.cert_path, &c.key_path).map(Arc::new)
+                }
+            })
             .transpose()?;
 
         Ok(Self {
@@ -353,6 +425,7 @@ mod tests {
         let tls = crate::ClusterTls {
             ca: Some(crate::CaConfig {
                 ca_path: ca.ca_path.to_str().unwrap().to_owned(),
+                ca_pem_bytes: None,
             }),
             ..crate::ClusterTls::default()
         };
@@ -411,6 +484,7 @@ mod tests {
         let tls = crate::ClusterTls {
             ca: Some(crate::CaConfig {
                 ca_path: "/nonexistent/ca.pem".to_owned(),
+                ca_pem_bytes: None,
             }),
             ..crate::ClusterTls::default()
         };
@@ -428,6 +502,8 @@ mod tests {
                 default: false,
                 key_path: "/nonexistent/key.pem".to_owned(),
                 server_names: Vec::new(),
+                cert_pem_bytes: None,
+                key_pem_bytes: None,
             }),
             ..crate::ClusterTls::default()
         };
@@ -458,6 +534,7 @@ mod tests {
         let tls = crate::ClusterTls {
             ca: Some(crate::CaConfig {
                 ca_path: ca.ca_path.to_str().unwrap().to_owned(),
+                ca_pem_bytes: None,
             }),
             ..crate::ClusterTls::default()
         };

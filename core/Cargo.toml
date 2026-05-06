@@ -16,8 +16,12 @@ name = "praxis_core"
 [lints]
 workspace = true
 
+[build-dependencies]
+prost-build = { workspace = true }
+
 [dependencies]
 pingora-core = { workspace = true }
+prost = { workspace = true }
 praxis-tls = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }

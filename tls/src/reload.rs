@@ -125,6 +125,8 @@ mod tests {
             default: false,
             key_path: certs.key_path.to_str().expect("key path").to_owned(),
             server_names: Vec::new(),
+            cert_pem_bytes: None,
+            key_pem_bytes: None,
         };
 
         let resolver = ReloadableCertResolver::new(&pair).expect("resolver creation should succeed");
@@ -140,6 +142,8 @@ mod tests {
             default: false,
             key_path: certs1.key_path.to_str().expect("key1 path").to_owned(),
             server_names: Vec::new(),
+            cert_pem_bytes: None,
+            key_pem_bytes: None,
         };
 
         let resolver = ReloadableCertResolver::new(&pair1).expect("initial load should succeed");
@@ -151,6 +155,8 @@ mod tests {
             default: false,
             key_path: certs2.key_path.to_str().expect("key2 path").to_owned(),
             server_names: Vec::new(),
+            cert_pem_bytes: None,
+            key_pem_bytes: None,
         };
 
         resolver.reload(&pair2).expect("reload should succeed");
@@ -171,6 +177,8 @@ mod tests {
             default: false,
             key_path: certs.key_path.to_str().expect("key path").to_owned(),
             server_names: Vec::new(),
+            cert_pem_bytes: None,
+            key_pem_bytes: None,
         };
 
         let resolver = ReloadableCertResolver::new(&pair).expect("initial load should succeed");
@@ -181,6 +189,8 @@ mod tests {
             default: false,
             key_path: "/nonexistent/key.pem".to_owned(),
             server_names: Vec::new(),
+            cert_pem_bytes: None,
+            key_pem_bytes: None,
         };
 
         let err = resolver.reload(&bad_pair);
@@ -202,6 +212,8 @@ mod tests {
             default: false,
             key_path: certs.key_path.to_str().expect("key path").to_owned(),
             server_names: Vec::new(),
+            cert_pem_bytes: None,
+            key_pem_bytes: None,
         };
         let resolver = ReloadableCertResolver::new(&pair).expect("resolver creation");
         let dbg = format!("{resolver:?}");

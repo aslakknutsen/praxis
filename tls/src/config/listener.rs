@@ -140,6 +140,35 @@ impl ListenerTls {
     ///
     /// [`TlsError`]: crate::TlsError
     /// [`ListenerTls`]: crate::ListenerTls
+    /// Construct a [`ListenerTls`] from an already-built inline [`CertKeyPair`].
+    ///
+    /// Intended for programmatic use (e.g. the gwxds translator) where
+    /// certificate bytes are delivered inline rather than as file paths.
+    /// Hot-reload is disabled since there are no files to watch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TlsError`] if validation fails (always succeeds for inline PEM).
+    ///
+    /// [`TlsError`]: crate::TlsError
+    pub fn from_inline(pair: CertKeyPair) -> Result<Self, TlsError> {
+        let config = Self {
+            certificates: vec![pair],
+            cipher_suites: None,
+            client_ca: None,
+            client_cert_mode: ClientCertMode::None,
+            hot_reload: Some(false),
+            min_version: None,
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Construct a [`ListenerTls`] from file paths and validate configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TlsError`] if validation fails.
     pub fn new_validated(cert_path: impl Into<String>, key_path: impl Into<String>) -> Result<Self, TlsError> {
         let config = Self {
             certificates: vec![CertKeyPair {
@@ -147,6 +176,8 @@ impl ListenerTls {
                 default: false,
                 key_path: key_path.into(),
                 server_names: Vec::new(),
+                cert_pem_bytes: None,
+                key_pem_bytes: None,
             }],
             cipher_suites: None,
             client_ca: None,
@@ -515,6 +546,7 @@ mod tests {
         let tls = ListenerTls {
             client_ca: Some(CaConfig {
                 ca_path: "/etc/../../evil-ca.pem".to_owned(),
+                ca_pem_bytes: None,
             }),
             client_cert_mode: ClientCertMode::Require,
             ..ListenerTls::new_validated(&tmp.cert, &tmp.key).unwrap()

@@ -10,6 +10,9 @@ members = [
     "protocol",
     "tls",
 
+    # Gateway xDS Client
+    "xds-client",
+
     # Praxis Developer Tooling
     "benchmarks",
     "xtask",
@@ -36,6 +39,7 @@ repository = "https://github.com/praxis-proxy/praxis"
 [workspace.dependencies]
 arc-swap = "1.9.1"
 async-trait = "0.1.89"
+base64 = "0.22"
 benchmarks = { path = "benchmarks" }
 bytes = "1.11.1"
 chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
@@ -74,7 +78,12 @@ tokio-tungstenite = "0.29.0"
 thiserror = "2.0.18"
 tikv-jemallocator = "0.6.1"
 tokio = { version = "1.52.1", features = ["macros", "rt"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = "0.7.18"
+tonic = { version = "0.13", features = ["tls-ring", "channel"] }
+prost = "0.13"
+prost-build = "0.13"
+prost-types = "0.13"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 

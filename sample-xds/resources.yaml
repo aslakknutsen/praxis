@@ -1,0 +1,86 @@
+# Gateway API resources for testing praxis against the custom istiod gwxds controller.
+#
+# The GatewayClass name "istio-gwxds" and controller name "istio.io/gwxds-controller"
+# are defined in the Istio fork (pkg/config/constants/constants.go).
+#
+# GATEWAY_NAME and GATEWAY_NAMESPACE are substituted by setup.sh via envsubst.
+# To apply manually, replace ${GATEWAY_NAME} and ${GATEWAY_NAMESPACE} with your values,
+# or export them and pipe through envsubst:
+#
+#   GATEWAY_NAME=praxis-gw GATEWAY_NAMESPACE=default envsubst < resources.yaml | kubectl apply -f -
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: istio-gwxds
+spec:
+  controllerName: istio.io/gwxds-controller
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: ${GATEWAY_NAME}
+  namespace: ${GATEWAY_NAMESPACE}
+spec:
+  gatewayClassName: istio-gwxds
+  listeners:
+    - name: http
+      port: 8080
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: Same
+---
+# Sample backend: a simple echo server to verify routing works end-to-end.
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo
+  namespace: ${GATEWAY_NAMESPACE}
+spec:
+  selector:
+    app: echo
+  ports:
+    - port: 8080
+      targetPort: 3000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo
+  namespace: ${GATEWAY_NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: echo
+  template:
+    metadata:
+      labels:
+        app: echo
+    spec:
+      containers:
+        - name: echo
+          image: registry.k8s.io/gateway-api/echo-basic:v20251204-v1.4.1
+          ports:
+            - containerPort: 3000
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: echo-route
+  namespace: ${GATEWAY_NAMESPACE}
+spec:
+  parentRefs:
+    - name: ${GATEWAY_NAME}
+      namespace: ${GATEWAY_NAMESPACE}
+  hostnames:
+    - "echo.example.com"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: echo
+          port: 8080

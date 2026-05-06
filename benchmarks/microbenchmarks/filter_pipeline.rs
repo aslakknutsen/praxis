@@ -55,12 +55,18 @@ fn bench_pipeline_execute_request(c: &mut Criterion) {
     let routes = vec![
         Route {
             path_prefix: "/api/".into(),
+            path_exact: None,
+            path_regex: None,
+            methods: None,
             host: None,
             headers: None,
             cluster: "api".into(),
         },
         Route {
             path_prefix: "/".into(),
+            path_exact: None,
+            path_regex: None,
+            methods: None,
             host: None,
             headers: None,
             cluster: "default".into(),

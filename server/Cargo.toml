@@ -27,6 +27,8 @@ notify = { workspace = true }
 praxis-core = { workspace = true }
 praxis-filter = { workspace = true }
 praxis-protocol = { workspace = true }
+praxis-xds-client = { path = "../xds-client" }
+rustls = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "time", "fs"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }

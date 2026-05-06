@@ -1,0 +1,27 @@
+[package]
+name = "praxis-xds-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "ADS gRPC client that consumes istiod's gwxds xDS stream"
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "praxis_xds_client"
+
+[lints]
+workspace = true
+
+[dependencies]
+http = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+praxis-core = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "rt"] }
+tokio-stream = { workspace = true }
+tonic = { workspace = true }
+tracing = { workspace = true }

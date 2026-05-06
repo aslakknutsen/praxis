@@ -34,6 +34,9 @@ pub(crate) fn default_crypto_provider() -> Arc<CryptoProvider> {
 
 /// Load a [`CertifiedKey`] from a [`CertKeyPair`].
 ///
+/// Uses inline PEM bytes when available (set via [`CertKeyPair::from_pem`]),
+/// otherwise reads from the file paths.
+///
 /// [`CertifiedKey`]: rustls::sign::CertifiedKey
 /// [`CertKeyPair`]: crate::CertKeyPair
 pub(crate) fn load_certified_key(pair: &CertKeyPair) -> Result<CertifiedKey, TlsError> {
@@ -49,7 +52,7 @@ pub(crate) fn load_certified_key(pair: &CertKeyPair) -> Result<CertifiedKey, Tls
     Ok(CertifiedKey::new(certs, signing_key))
 }
 
-/// Load certificate chain and private key from PEM files.
+/// Load certificate chain and private key, preferring inline PEM bytes over file paths.
 pub(super) fn load_cert_and_key(
     pair: &CertKeyPair,
 ) -> Result<
@@ -59,14 +62,23 @@ pub(super) fn load_cert_and_key(
     ),
     TlsError,
 > {
-    let cert_pem = std::fs::read(&pair.cert_path).map_err(|e| TlsError::FileLoadError {
-        path: pair.cert_path.clone(),
-        detail: format!("failed to read cert: {e}"),
-    })?;
-    let key_pem = std::fs::read(&pair.key_path).map_err(|e| TlsError::FileLoadError {
-        path: pair.key_path.clone(),
-        detail: format!("failed to read key: {e}"),
-    })?;
+    let cert_pem: Vec<u8> = if let Some(bytes) = &pair.cert_pem_bytes {
+        bytes.clone()
+    } else {
+        std::fs::read(&pair.cert_path).map_err(|e| TlsError::FileLoadError {
+            path: pair.cert_path.clone(),
+            detail: format!("failed to read cert: {e}"),
+        })?
+    };
+
+    let key_pem: Vec<u8> = if let Some(bytes) = &pair.key_pem_bytes {
+        bytes.clone()
+    } else {
+        std::fs::read(&pair.key_path).map_err(|e| TlsError::FileLoadError {
+            path: pair.key_path.clone(),
+            detail: format!("failed to read key: {e}"),
+        })?
+    };
 
     let certs = rustls_pemfile::certs(&mut &cert_pem[..])
         .collect::<Result<Vec<_>, _>>()

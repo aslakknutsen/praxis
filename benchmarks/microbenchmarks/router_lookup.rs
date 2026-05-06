@@ -87,6 +87,9 @@ fn make_routes(n: usize) -> Vec<Route> {
     let mut routes: Vec<Route> = (0..n)
         .map(|i| Route {
             path_prefix: format!("/svc-{i}/"),
+            path_exact: None,
+            path_regex: None,
+            methods: None,
             host: None,
             headers: None,
             cluster: format!("cluster-{i}").into(),
@@ -95,6 +98,9 @@ fn make_routes(n: usize) -> Vec<Route> {
 
     routes.push(Route {
         path_prefix: "/".into(),
+        path_exact: None,
+        path_regex: None,
+        methods: None,
         host: None,
         headers: None,
         cluster: "fallback".into(),

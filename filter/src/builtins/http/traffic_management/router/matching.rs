@@ -1,30 +1,69 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2024 Shane Utt
 
-//! Path, host, and header matching logic for the router filter.
+//! Path, host, header, and method matching logic for the router filter.
 
 use std::collections::HashMap;
 
 use http::HeaderMap;
 use praxis_core::config::Route;
+use regex::Regex;
 
 use super::ResolvedRoute;
+
+// -----------------------------------------------------------------------------
+// Path Specificity
+// -----------------------------------------------------------------------------
+
+/// Effective path specificity used for sorting and best-match selection.
+///
+/// Exact matches are maximally specific; regex matches rank above any prefix;
+/// prefix matches use their byte length.
+pub(super) fn path_specificity(route: &Route) -> usize {
+    if route.path_exact.is_some() {
+        usize::MAX
+    } else if route.path_regex.is_some() {
+        usize::MAX - 1
+    } else {
+        route.path_prefix.len()
+    }
+}
 
 // -----------------------------------------------------------------------------
 // Route Matching
 // -----------------------------------------------------------------------------
 
-/// Check whether a resolved route matches the request path, host, and headers.
+/// Check whether a resolved route matches the request path, host, headers, and method.
 pub(super) fn route_matches_request(
     resolved: &ResolvedRoute,
     path: &str,
     host: Option<&str>,
     req_headers: &HeaderMap,
+    method: Option<&str>,
 ) -> bool {
     let route = &resolved.route;
-    if !path.starts_with(&route.path_prefix) {
+
+    let path_ok = if let Some(exact) = &route.path_exact {
+        path == exact
+    } else if let Some(pattern) = &route.path_regex {
+        Regex::new(pattern).is_ok_and(|re| re.is_match(path))
+    } else {
+        path.starts_with(&route.path_prefix)
+    };
+
+    if !path_ok {
         return false;
     }
+
+    if let Some(methods) = &route.methods {
+        if !methods.is_empty() {
+            let m = method.unwrap_or("");
+            if !methods.iter().any(|allowed| allowed.eq_ignore_ascii_case(m)) {
+                return false;
+            }
+        }
+    }
+
     let host_ok = match &route.host {
         Some(h) => host.is_some_and(|req_host| {
             let req_host = strip_port(req_host);
@@ -40,18 +79,26 @@ pub(super) fn update_best_match<'a>(
     best: Option<(usize, usize, &'a Route)>,
     route: &'a Route,
 ) -> Option<(usize, usize, &'a Route)> {
-    let prefix_len = route.path_prefix.len();
-    let constraints = usize::from(route.host.is_some()) + route.headers.as_ref().map_or(0, HashMap::len);
-    let dominated = best.is_some_and(|(bp, bc, _)| (prefix_len, constraints) <= (bp, bc));
+    let specificity = path_specificity(route);
+    let constraints = usize::from(route.host.is_some())
+        + route.headers.as_ref().map_or(0, HashMap::len)
+        + usize::from(route.methods.as_ref().is_some_and(|m| !m.is_empty()));
+    let dominated = best.is_some_and(|(bp, bc, _)| (specificity, constraints) <= (bp, bc));
     if dominated {
         best
     } else {
-        Some((prefix_len, constraints, route))
+        Some((specificity, constraints, route))
     }
 }
 
 /// Return `true` if shorter prefixes cannot improve on the current best.
+///
+/// Exact and regex routes are never stopped early since they may appear
+/// anywhere in the sorted list.
 pub(super) fn should_stop_early(best: Option<(usize, usize, &Route)>, route: &Route) -> bool {
+    if route.path_exact.is_some() || route.path_regex.is_some() {
+        return false;
+    }
     best.is_some_and(|(bp, ..)| route.path_prefix.len() < bp)
 }
 

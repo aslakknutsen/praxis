@@ -27,7 +27,7 @@ use tracing::{debug, trace};
 
 use self::{
     config::RouterConfig,
-    matching::{route_matches_request, should_stop_early, update_best_match},
+    matching::{path_specificity, route_matches_request, should_stop_early, update_best_match},
 };
 use crate::{
     FilterError,
@@ -93,8 +93,8 @@ struct ResolvedRoute {
 impl RouterFilter {
     /// Create a router from a list of routes.
     ///
-    /// Returns an error if any `path_prefix` (other than `"/"`)
-    /// does not end with `'/'`.
+    /// Returns an error if any prefix-based route has a `path_prefix` (other than `"/"`)
+    /// that does not end with `'/'`. Routes using `path_exact` or `path_regex` are exempt.
     ///
     /// ```
     /// use praxis_core::config::Route;
@@ -103,12 +103,18 @@ impl RouterFilter {
     /// let router = RouterFilter::new(vec![
     ///     Route {
     ///         path_prefix: "/".into(),
+    ///         path_exact: None,
+    ///         path_regex: None,
+    ///         methods: None,
     ///         host: None,
     ///         headers: None,
     ///         cluster: "default".into(),
     ///     },
     ///     Route {
     ///         path_prefix: "/api/".into(),
+    ///         path_exact: None,
+    ///         path_regex: None,
+    ///         methods: None,
     ///         host: None,
     ///         headers: None,
     ///         cluster: "api".into(),
@@ -123,6 +129,9 @@ impl RouterFilter {
     ///
     /// let err = RouterFilter::new(vec![Route {
     ///     path_prefix: "/api".into(),
+    ///     path_exact: None,
+    ///     path_regex: None,
+    ///     methods: None,
     ///     host: None,
     ///     headers: None,
     ///     cluster: "api".into(),
@@ -137,15 +146,17 @@ impl RouterFilter {
     /// [`FilterError`]: crate::FilterError
     pub fn new(routes: Vec<Route>) -> Result<Self, FilterError> {
         let mut routes = routes;
-        routes.sort_by_key(|b| std::cmp::Reverse(b.path_prefix.len()));
+        routes.sort_by_key(|b| std::cmp::Reverse(path_specificity(b)));
         for route in &routes {
-            if route.path_prefix != "/" && !route.path_prefix.ends_with('/') {
-                return Err(format!(
-                    "router: path_prefix '{}' for cluster '{}' must end with '/' \
-                     to ensure segment-bounded matching",
-                    route.path_prefix, route.cluster,
-                )
-                .into());
+            if route.path_exact.is_none() && route.path_regex.is_none() {
+                if route.path_prefix != "/" && !route.path_prefix.ends_with('/') {
+                    return Err(format!(
+                        "router: path_prefix '{}' for cluster '{}' must end with '/' \
+                         to ensure segment-bounded matching",
+                        route.path_prefix, route.cluster,
+                    )
+                    .into());
+                }
             }
         }
         let resolved: Vec<ResolvedRoute> = routes
@@ -174,16 +185,22 @@ impl RouterFilter {
         Ok(Box::new(Self::new(cfg.routes)?))
     }
 
-    /// Find the best matching route for the given path, host, and headers.
+    /// Find the best matching route for the given path, host, headers, and method.
     ///
-    /// When multiple routes share the same prefix length, the route with
-    /// more constraints (host presence + header count) wins.
-    fn match_route(&self, path: &str, host: Option<&str>, req_headers: &HeaderMap) -> Option<&Route> {
+    /// When multiple routes have the same specificity, the route with more
+    /// constraints (host presence + header count + method constraint) wins.
+    fn match_route(
+        &self,
+        path: &str,
+        host: Option<&str>,
+        req_headers: &HeaderMap,
+        method: Option<&str>,
+    ) -> Option<&Route> {
         let mut best: Option<(usize, usize, &Route)> = None;
 
         for resolved in &self.routes {
             let route = &resolved.route;
-            if !route_matches_request(resolved, path, host, req_headers) {
+            if !route_matches_request(resolved, path, host, req_headers, method) {
                 continue;
             }
             best = update_best_match(best, route);
@@ -210,9 +227,10 @@ impl HttpFilter for RouterFilter {
             .get("host")
             .and_then(|v| v.to_str().ok())
             .or_else(|| ctx.request.uri.authority().map(http::uri::Authority::as_str));
+        let method = ctx.request.method.as_str();
 
-        trace!(path = %path, host = host.unwrap_or(""), "matching route");
-        if let Some(route) = self.match_route(path, host, &ctx.request.headers) {
+        trace!(path = %path, host = host.unwrap_or(""), method = %method, "matching route");
+        if let Some(route) = self.match_route(path, host, &ctx.request.headers, Some(method)) {
             debug!(
                 path = %path,
                 cluster = %route.cluster,

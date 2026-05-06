@@ -14,7 +14,9 @@ use praxis_core::{
     health::{HealthRegistry, build_health_registry},
 };
 use praxis_filter::FilterRegistry;
+use praxis_core::gwxds::Resource;
 use praxis_protocol::{CertWatcherShutdowns, ListenerPipelines, Protocol, http::PingoraHttp, tcp::PingoraTcp};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -49,6 +51,45 @@ pub fn resolve_config_path(explicit: Option<&str>) -> Option<PathBuf> {
 // -----------------------------------------------------------------------------
 // Server
 // -----------------------------------------------------------------------------
+
+/// Run the server in gwxds mode.
+///
+/// Accepts the initial config (already translated from the first gwxds push)
+/// and a channel for subsequent resource batches. Starts the server, then
+/// spawns a background watcher that applies hot-reloads via `reload_pipelines`
+/// whenever a new batch arrives.
+///
+/// Never returns (the server runs until the process is terminated).
+#[allow(clippy::needless_pass_by_value, reason = "server owns config")]
+pub fn run_server_gwxds(initial_config: Config, xds_rx: mpsc::Receiver<Vec<Resource>>) -> ! {
+    let registry = FilterRegistry::with_builtins();
+    enforce_root_check(&initial_config);
+    warn_insecure_key_permissions(&initial_config);
+
+    let health_registry = build_health_registry(&initial_config.clusters);
+    let pipelines =
+        resolve_pipelines(&initial_config, &registry, &health_registry).unwrap_or_else(|e| fatal(&e));
+    let pipelines = Arc::new(pipelines);
+
+    info!("initializing server (gwxds mode)");
+    let mut server = PingoraServerRuntime::new(&initial_config);
+    let _cert_shutdowns = register_protocols(&mut server, &initial_config, &pipelines);
+
+    let health_shutdown = Arc::new(Mutex::new(CancellationToken::new()));
+    spawn_health_check_tasks(&initial_config, &health_registry, &health_shutdown);
+
+    // Spawn the gwxds config update watcher
+    let _gwxds_watcher = crate::gwxds::spawn_gwxds_watcher(
+        initial_config,
+        Arc::new(registry),
+        Arc::clone(&pipelines),
+        Arc::clone(&health_shutdown),
+        xds_rx,
+    );
+
+    info!("starting server");
+    server.run()
+}
 
 /// Build filter pipelines using the built-in registry, register protocols and run the server.
 ///
@@ -103,7 +144,12 @@ fn register_protocols(
 ) -> CertWatcherShutdowns {
     let mut all_shutdowns = Vec::new();
 
-    if config.listeners.iter().any(|l| l.protocol == ProtocolKind::Http) {
+    // HTTP stack is required for HTTP listeners and for the admin interface (health probes).
+    // gwxds mode may start with zero listeners while `admin.address` is still set.
+    let needs_http_stack = config.listeners.iter().any(|l| l.protocol == ProtocolKind::Http)
+        || config.admin.address.is_some();
+
+    if needs_http_stack {
         let shutdowns = Box::new(PingoraHttp)
             .register(server, config, pipelines)
             .unwrap_or_else(|e| fatal(&e));

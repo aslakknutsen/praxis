@@ -1,0 +1,161 @@
+// Copyright Istio Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Package gwxdsapi defines the neutral xDS transfer schema for Gateway API
+// resources. Istiod serialises resolved listeners and routes into these
+// messages and distributes them via xDS to any gwxds-capable proxy.
+// The schema is intentionally self-contained: it imports no other istio
+// protos and carries no proxy-specific logic.
+
+syntax = "proto3";
+
+package istio.gwxds;
+
+option go_package = "istio.io/istio/pkg/gwxdsapi";
+
+// Protocol identifies the listener protocol.
+enum Protocol {
+  UNKNOWN = 0;
+  HTTP    = 1;
+  HTTPS   = 2;
+  TLS     = 3;
+  TCP     = 4;
+}
+
+// FailureMode controls proxy behaviour when an InferencePool endpoint picker
+// is unreachable.
+enum FailureMode {
+  // FAIL_CLOSED rejects the request when the endpoint picker is unreachable.
+  FAIL_CLOSED = 0;
+  // FAIL_OPEN falls back to direct routing when the endpoint picker is unreachable.
+  FAIL_OPEN = 1;
+}
+
+// TLSConfig holds resolved TLS material for a listener.
+// Certificate and key bytes are resolved by istiod; the proxy does not need
+// Kubernetes API access.
+message TLSConfig {
+  // PEM-encoded certificate chain.
+  bytes cert_pem = 1;
+  // PEM-encoded private key.
+  bytes key_pem = 2;
+  // PEM-encoded CA certificate for client verification (mTLS).
+  // Empty when mutual TLS is not required.
+  bytes ca_pem = 3;
+  // Minimum TLS version string, e.g. "TLSv1_2".
+  string min_version = 4;
+}
+
+// Listener is a resolved Gateway listener ready for xDS distribution.
+message Listener {
+  // Stable key of the form "namespace/gateway-name/listener-name".
+  string key = 1;
+  // SNI / virtual-host hostname pattern (may contain wildcards).
+  string hostname = 2;
+  // Listener port.
+  uint32 port = 3;
+  // Listener protocol.
+  Protocol protocol = 4;
+  // Resolved TLS material. Absent for plain-text listeners.
+  TLSConfig tls = 5;
+  // Set of "group/kind" strings identifying route kinds allowed to attach.
+  repeated string allowed_routes = 6;
+}
+
+// BackendRef is a lightweight host:port reference used within backend descriptors.
+message BackendRef {
+  string host = 1;
+  uint32 port = 2;
+}
+
+// InferencePool describes the endpoint picker configuration for an InferencePool
+// backend. Proxies that implement the EPP protocol delegate per-request endpoint
+// selection to the picker. Proxies without EPP support should warn and may fall
+// back to direct routing or reject the request per failure_mode.
+message InferencePool {
+  // EPP sidecar that selects the actual backend pod per request.
+  BackendRef endpoint_picker = 1;
+  // Controls behaviour when the endpoint picker is unreachable.
+  FailureMode failure_mode = 2;
+}
+
+// BackendTLS carries the resolved TLS policy for a single backend.
+// Absent means no TLS policy applies (plaintext connection to backend).
+message BackendTLS {
+  // PEM-encoded CA bundle for verifying the backend certificate.
+  // Empty means use the system CA trust store.
+  bytes ca_cert = 1;
+  // Expected TLS SNI / server name.
+  string hostname = 2;
+  // Expected Subject Alternative Names.
+  repeated string sans = 3;
+  // PEM-encoded client certificate for mTLS to the backend.
+  bytes client_cert = 4;
+  // PEM-encoded client private key for mTLS to the backend.
+  bytes client_key = 5;
+  // Set when the policy referenced a certificate that could not be resolved.
+  // Proxies should treat this as a hard error.
+  bool invalid = 6;
+}
+
+// Backend is a resolved upstream target.
+message Backend {
+  // FQDN of the backend service.
+  string host = 1;
+  // Backend service port.
+  uint32 port = 2;
+  // Traffic weight for weighted routing. 0 is treated as 1.
+  uint32 weight = 3;
+  // Set when this backend is an InferencePool.
+  InferencePool inference_pool = 4;
+  // Set when a BackendTLSPolicy applies to this backend.
+  BackendTLS tls = 5;
+}
+
+// RouteMatch describes matching criteria for a single route rule.
+message RouteMatch {
+  // HTTP path prefix match. Empty means match all paths.
+  string path_prefix = 1;
+  // Exact path match. Takes priority over path_prefix when set.
+  string path_exact = 2;
+  // Regex path match.
+  string path_regex = 3;
+  // Required header key/value matches.
+  map<string, string> headers = 4;
+  // HTTP methods to match. Empty means all methods.
+  repeated string methods = 5;
+}
+
+// Route is a resolved route rule attached to a listener.
+message Route {
+  // Stable key of the form "namespace/route-name/rule-index".
+  string key = 1;
+  // Key of the Listener this route is attached to.
+  string listener_key = 2;
+  // Virtual-host hostnames this route serves.
+  repeated string hostnames = 3;
+  // Matching criteria. Empty means match all requests.
+  repeated RouteMatch matches = 4;
+  // Upstream targets for matched requests.
+  repeated Backend backends = 5;
+}
+
+// Resource is the top-level xDS resource served to a gwxds-capable proxy.
+// It bundles a resolved listener with all its attached routes.
+message Resource {
+  // Same as the contained listener's key.
+  string key = 1;
+  Listener listener = 2;
+  repeated Route routes = 3;
+}
