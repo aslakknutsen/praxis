@@ -164,7 +164,6 @@ fn build_routes_and_clusters(resource: &Resource) -> (Vec<Route>, Vec<Cluster>) 
             });
             seen_clusters.insert(cluster_name.clone(), ());
         }
-
         let match_routes = if gw_route.matches.is_empty() {
             vec![Route {
                 path_prefix: "/".to_owned(),
@@ -237,11 +236,16 @@ fn resolve_path_match(
     }
 }
 
+/// Normalize a Gateway `PathPrefix` value for the router.
+///
+/// Gateway API treats `/abc` and `/abc/` as the same match; we store the
+/// canonical form without a trailing slash (except root `/`).
 fn normalize_prefix(prefix: &str) -> String {
-    if prefix == "/" || prefix.ends_with('/') {
-        prefix.to_owned()
+    let trimmed = prefix.trim_end_matches('/');
+    if trimmed.is_empty() {
+        "/".to_owned()
     } else {
-        format!("{prefix}/")
+        trimmed.to_owned()
     }
 }
 

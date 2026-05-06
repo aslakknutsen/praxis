@@ -15,9 +15,11 @@ use serde::{Deserialize, Serialize};
 ///
 /// Exactly one of `path_prefix`, `path_exact`, or `path_regex` should be set.
 /// When none of the exact/regex fields are set, `path_prefix` is used (the
-/// longest matching prefix wins). When `path_exact` is set, `path_prefix` is
-/// ignored for path matching. When `path_regex` is set, it is matched against
-/// the full request path.
+/// longest matching prefix wins). Prefix matching follows Gateway API segment
+/// rules: `/api` matches `/api` and `/api/v1` but not `/apikeys`; a trailing
+/// slash on the configured prefix is ignored (`/api` and `/api/` are the
+/// same). When `path_exact` is set, `path_prefix` is ignored for path matching.
+/// When `path_regex` is set, it is matched against the full request path.
 ///
 /// ```
 /// use praxis_core::config::Route;

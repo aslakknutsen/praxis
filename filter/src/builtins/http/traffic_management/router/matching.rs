@@ -9,6 +9,8 @@ use http::HeaderMap;
 use praxis_core::config::Route;
 use regex::Regex;
 
+use crate::path_match::{gateway_path_prefix_matches, gateway_path_prefix_specificity};
+
 use super::ResolvedRoute;
 
 // -----------------------------------------------------------------------------
@@ -18,14 +20,15 @@ use super::ResolvedRoute;
 /// Effective path specificity used for sorting and best-match selection.
 ///
 /// Exact matches are maximally specific; regex matches rank above any prefix;
-/// prefix matches use their byte length.
+/// prefix matches use Gateway API rules: trailing slashes on the configured
+/// prefix are ignored, so `/api` and `/api/` have the same specificity.
 pub(super) fn path_specificity(route: &Route) -> usize {
     if route.path_exact.is_some() {
         usize::MAX
     } else if route.path_regex.is_some() {
         usize::MAX - 1
     } else {
-        route.path_prefix.len()
+        gateway_path_prefix_specificity(&route.path_prefix)
     }
 }
 
@@ -48,7 +51,7 @@ pub(super) fn route_matches_request(
     } else if let Some(pattern) = &route.path_regex {
         Regex::new(pattern).is_ok_and(|re| re.is_match(path))
     } else {
-        path.starts_with(&route.path_prefix)
+        gateway_path_prefix_matches(path, &route.path_prefix)
     };
 
     if !path_ok {
@@ -99,7 +102,7 @@ pub(super) fn should_stop_early(best: Option<(usize, usize, &Route)>, route: &Ro
     if route.path_exact.is_some() || route.path_regex.is_some() {
         return false;
     }
-    best.is_some_and(|(bp, ..)| route.path_prefix.len() < bp)
+    best.is_some_and(|(bp, ..)| path_specificity(route) < bp)
 }
 
 // -----------------------------------------------------------------------------

@@ -9,6 +9,7 @@
 mod actions;
 mod any_filter;
 mod body;
+mod path_match;
 #[allow(unreachable_pub, reason = "internal pub items re-exported selectively")]
 mod builtins;
 mod condition;

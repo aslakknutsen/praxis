@@ -93,8 +93,9 @@ struct ResolvedRoute {
 impl RouterFilter {
     /// Create a router from a list of routes.
     ///
-    /// Returns an error if any prefix-based route has a `path_prefix` (other than `"/"`)
-    /// that does not end with `'/'`. Routes using `path_exact` or `path_regex` are exempt.
+    /// Prefix routes use Gateway API–aligned matching: a `path_prefix` of `/api`
+    /// matches `/api`, `/api/`, and `/api/v1` but not `/apikeys`. A trailing slash
+    /// on the configured prefix is ignored (`/api` and `/api/` are equivalent).
     ///
     /// ```
     /// use praxis_core::config::Route;
@@ -111,7 +112,7 @@ impl RouterFilter {
     ///         cluster: "default".into(),
     ///     },
     ///     Route {
-    ///         path_prefix: "/api/".into(),
+    ///         path_prefix: "/api".into(),
     ///         path_exact: None,
     ///         path_regex: None,
     ///         methods: None,
@@ -122,43 +123,9 @@ impl RouterFilter {
     /// ])
     /// .unwrap();
     /// ```
-    ///
-    /// ```
-    /// use praxis_core::config::Route;
-    /// use praxis_filter::RouterFilter;
-    ///
-    /// let err = RouterFilter::new(vec![Route {
-    ///     path_prefix: "/api".into(),
-    ///     path_exact: None,
-    ///     path_regex: None,
-    ///     methods: None,
-    ///     host: None,
-    ///     headers: None,
-    ///     cluster: "api".into(),
-    /// }])
-    /// .unwrap_err();
-    /// assert!(err.to_string().contains("must end with '/'"));
-    /// ```
-    /// # Errors
-    ///
-    /// Returns [`FilterError`] if any route prefix does not end with `/`.
-    ///
-    /// [`FilterError`]: crate::FilterError
     pub fn new(routes: Vec<Route>) -> Result<Self, FilterError> {
         let mut routes = routes;
         routes.sort_by_key(|b| std::cmp::Reverse(path_specificity(b)));
-        for route in &routes {
-            if route.path_exact.is_none() && route.path_regex.is_none() {
-                if route.path_prefix != "/" && !route.path_prefix.ends_with('/') {
-                    return Err(format!(
-                        "router: path_prefix '{}' for cluster '{}' must end with '/' \
-                         to ensure segment-bounded matching",
-                        route.path_prefix, route.cluster,
-                    )
-                    .into());
-                }
-            }
-        }
         let resolved: Vec<ResolvedRoute> = routes
             .into_iter()
             .map(|route| {

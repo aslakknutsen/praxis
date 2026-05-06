@@ -5,7 +5,7 @@
 
 use praxis_core::config::{Condition, ConditionMatch};
 
-use crate::context::Request;
+use crate::{context::Request, path_match::gateway_path_prefix_matches};
 
 // -----------------------------------------------------------------------------
 // Request Condition Evaluation
@@ -76,7 +76,7 @@ fn matches_request(m: &ConditionMatch, req: &Request) -> bool {
     }
 
     if let Some(ref prefix) = m.path_prefix
-        && !req.uri.path().starts_with(prefix)
+        && !gateway_path_prefix_matches(req.uri.path(), prefix)
     {
         return false;
     }
@@ -137,6 +137,15 @@ mod tests {
     fn when_path_does_not_match() {
         let req = make_request(Method::GET, "/health", HeaderMap::new());
         assert!(!should_execute(&[when(path_match("/api"))], &req));
+    }
+
+    #[test]
+    fn when_path_prefix_respects_segment_boundary() {
+        let req = make_request(Method::GET, "/apikeys", HeaderMap::new());
+        assert!(
+            !should_execute(&[when(path_match("/api"))], &req),
+            "prefix /api must not match /apikeys (Gateway-style)"
+        );
     }
 
     #[test]
