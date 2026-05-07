@@ -8,7 +8,7 @@ use std::borrow::Cow;
 use pingora_core::Result;
 use pingora_proxy::Session;
 use praxis_core::connectivity::normalize_mapped_ipv4;
-use praxis_filter::{BodyMode, FilterAction, FilterError, FilterPipeline, Rejection, Request};
+use praxis_filter::{BodyMode, FilterAction, FilterError, FilterPipeline, PendingRequestHeaderOp, Rejection, Request};
 use tracing::warn;
 
 use super::super::{
@@ -102,7 +102,7 @@ pub(in crate::http) async fn execute(
         }
     }
 
-    match run_pipeline(pipeline, request, ctx).await {
+    match run_pipeline(pipeline, Some(session), request, ctx).await {
         Ok((FilterAction::Continue | FilterAction::Release | FilterAction::BodyDone, extra_headers)) => {
             for (name, value) in extra_headers {
                 let _insert = session.req_header_mut().insert_header(name.into_owned(), value);
@@ -125,15 +125,91 @@ pub(in crate::http) async fn execute(
 // Header-Phase Pipeline
 // -----------------------------------------------------------------------------
 
+fn apply_pending_request_header_ops(
+    session: Option<&mut Session>,
+    request: &mut Request,
+    ops: &[PendingRequestHeaderOp],
+) {
+    match session {
+        Some(sess) => {
+            for op in ops {
+                match op {
+                    PendingRequestHeaderOp::Remove(name) => {
+                        if let Ok(hn) = http::header::HeaderName::from_bytes(name.as_bytes()) {
+                            request.headers.remove(&hn);
+                        }
+                        drop(sess.req_header_mut().remove_header(name.as_str()));
+                    }
+                    PendingRequestHeaderOp::Set(name, value) => {
+                        if let (Ok(hn), Ok(hv)) = (
+                            http::header::HeaderName::from_bytes(name.as_bytes()),
+                            http::header::HeaderValue::from_str(value),
+                        ) {
+                            request.headers.insert(hn, hv);
+                        }
+                        let _insert = sess.req_header_mut().insert_header(name.clone(), value.clone());
+                    }
+                    PendingRequestHeaderOp::Add(name, value) => {
+                        if let (Ok(hn), Ok(hv)) = (
+                            http::header::HeaderName::from_bytes(name.as_bytes()),
+                            http::header::HeaderValue::from_str(value),
+                        ) {
+                            request.headers.append(hn, hv);
+                        }
+                        let _append = sess.req_header_mut().append_header(name.clone(), value.clone());
+                    }
+                }
+            }
+        }
+        None => {
+            for op in ops {
+                match op {
+                    PendingRequestHeaderOp::Remove(name) => {
+                        if let Ok(hn) = http::header::HeaderName::from_bytes(name.as_bytes()) {
+                            request.headers.remove(&hn);
+                        }
+                    }
+                    PendingRequestHeaderOp::Set(name, value) => {
+                        if let (Ok(hn), Ok(hv)) = (
+                            http::header::HeaderName::from_bytes(name.as_bytes()),
+                            http::header::HeaderValue::from_str(value),
+                        ) {
+                            request.headers.insert(hn, hv);
+                        }
+                    }
+                    PendingRequestHeaderOp::Add(name, value) => {
+                        if let (Ok(hn), Ok(hv)) = (
+                            http::header::HeaderName::from_bytes(name.as_bytes()),
+                            http::header::HeaderValue::from_str(value),
+                        ) {
+                            request.headers.append(hn, hv);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Run the request-phase filter pipeline and snapshot the request for later phases.
 ///
 /// Returns the final action and any extra headers promoted by filters.
 async fn run_pipeline(
     pipeline: &FilterPipeline,
-    request: Request,
+    session: Option<&mut Session>,
+    mut request: Request,
     ctx: &mut PingoraRequestCtx,
 ) -> std::result::Result<(FilterAction, Vec<(Cow<'static, str>, String)>), FilterError> {
-    let (action, extra_headers, cluster, upstream, rewritten_path, request_body_mode, selected_endpoint_index) = {
+    let (
+        action,
+        extra_headers,
+        cluster,
+        upstream,
+        rewritten_path,
+        request_body_mode,
+        selected_endpoint_index,
+        pending_ops,
+    ) = {
         let mut filter_ctx = ctx.build_filter_context(pipeline, &request, None);
 
         let action = pipeline.execute_http_request(&mut filter_ctx).await;
@@ -145,8 +221,11 @@ async fn run_pipeline(
             filter_ctx.rewritten_path,
             filter_ctx.request_body_mode,
             filter_ctx.selected_endpoint_index,
+            filter_ctx.pending_request_header_ops,
         )
     };
+
+    apply_pending_request_header_ops(session, &mut request, &pending_ops);
 
     ctx.request_snapshot = Some(request);
 
@@ -188,7 +267,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_pipeline_continues() {
-        let (action, extra_headers) = run_pipeline(&empty_pipeline(), make_request(), &mut make_ctx())
+        let (action, extra_headers) = run_pipeline(&empty_pipeline(), None, make_request(), &mut make_ctx())
             .await
             .unwrap();
 
@@ -206,7 +285,7 @@ mod tests {
     async fn snapshot_always_stored() {
         let mut ctx = make_ctx();
 
-        drop(run_pipeline(&empty_pipeline(), make_request(), &mut ctx).await.unwrap());
+        drop(run_pipeline(&empty_pipeline(), None, make_request(), &mut ctx).await.unwrap());
 
         assert!(
             ctx.request_snapshot.is_some(),
@@ -218,7 +297,7 @@ mod tests {
     async fn cluster_and_upstream_propagated_on_continue() {
         let mut ctx = make_ctx();
 
-        drop(run_pipeline(&empty_pipeline(), make_request(), &mut ctx).await.unwrap());
+        drop(run_pipeline(&empty_pipeline(), None, make_request(), &mut ctx).await.unwrap());
 
         assert!(ctx.cluster.is_none(), "empty pipeline should leave cluster unset");
         assert!(ctx.upstream.is_none(), "empty pipeline should leave upstream unset");
@@ -229,7 +308,7 @@ mod tests {
         let pipeline = rejecting_pipeline(403);
         let mut ctx = make_ctx();
 
-        let (action, _) = run_pipeline(&pipeline, make_request(), &mut ctx).await.unwrap();
+        let (action, _) = run_pipeline(&pipeline, None, make_request(), &mut ctx).await.unwrap();
 
         assert!(matches!(action, FilterAction::Reject(r) if r.status == 403));
     }
@@ -239,7 +318,7 @@ mod tests {
         let pipeline = rejecting_pipeline(429);
         let mut ctx = make_ctx();
 
-        drop(run_pipeline(&pipeline, make_request(), &mut ctx).await.unwrap());
+        drop(run_pipeline(&pipeline, None, make_request(), &mut ctx).await.unwrap());
 
         assert!(ctx.cluster.is_none(), "rejection should not set cluster");
         assert!(ctx.upstream.is_none(), "rejection should not set upstream");
@@ -250,7 +329,7 @@ mod tests {
         let pipeline = empty_pipeline();
         let mut ctx = make_ctx();
 
-        let (_, extra_headers) = run_pipeline(&pipeline, make_request(), &mut ctx).await.unwrap();
+        let (_, extra_headers) = run_pipeline(&pipeline, None, make_request(), &mut ctx).await.unwrap();
 
         assert!(
             extra_headers.is_empty(),

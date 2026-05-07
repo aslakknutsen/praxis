@@ -37,7 +37,7 @@ pub use insecure_options::InsecureOptions;
 pub use listener::{Listener, ListenerTls, ProtocolKind};
 use parse::check_yaml_safety;
 pub use praxis_tls::{CachedClusterTls, ClusterTls};
-pub use route::{RedirectAction, Route};
+pub use route::{HeaderNameValue, RedirectAction, RequestHeaderModifier, Route};
 pub use runtime::RuntimeConfig;
 pub use validate::{MAX_BRANCH_DEPTH, MAX_ITERATIONS_CEILING};
 

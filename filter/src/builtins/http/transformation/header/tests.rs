@@ -5,9 +5,10 @@
 
 use super::{
     HeaderFilter, HeaderFilterConfig,
-    ops::{append_headers, remove_headers, set_headers},
+    ops::{append_headers, parse_header_pairs, remove_headers, set_headers, validate_raw_header_pairs},
 };
 use crate::filter::HttpFilter;
+use crate::PendingRequestHeaderOp;
 
 // -----------------------------------------------------------------------------
 // Tests
@@ -23,14 +24,14 @@ async fn request_add_populates_extra_headers() {
     let req = crate::test_utils::make_request(http::Method::GET, "/");
     let mut ctx = crate::test_utils::make_filter_context(&req);
     drop(filter.on_request(&mut ctx).await.unwrap());
-    assert_eq!(
-        ctx.extra_request_headers.len(),
-        1,
-        "should add exactly one request header"
-    );
-    let (ref name, ref value) = ctx.extra_request_headers[0];
-    assert_eq!(name, "X-Forwarded-By", "header name should match");
-    assert_eq!(value, "praxis", "header value should match");
+    assert_eq!(ctx.pending_request_header_ops.len(), 1, "should enqueue one op");
+    match &ctx.pending_request_header_ops[0] {
+        PendingRequestHeaderOp::Add(name, value) => {
+            assert_eq!(name, "X-Forwarded-By");
+            assert_eq!(value, "praxis");
+        }
+        other => panic!("expected Add op, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -265,19 +266,23 @@ fn make_header_filter(yaml: &str) -> HeaderFilter {
     let config: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
     drop(HeaderFilter::from_config(&config).unwrap());
     let cfg: HeaderFilterConfig = serde_yaml::from_value(config).unwrap();
+    let request_add = validate_raw_header_pairs(cfg.request_add, "request_add").unwrap();
+    let request_set = validate_raw_header_pairs(cfg.request_set, "request_set").unwrap();
+    let request_remove = cfg
+        .request_remove
+        .into_iter()
+        .map(|name| {
+            http::header::HeaderName::from_bytes(name.as_bytes())
+                .unwrap_or_else(|_| panic!("invalid request_remove name {name}"))
+        })
+        .collect();
     HeaderFilter {
-        request_add: cfg.request_add.into_iter().map(|p| (p.name, p.value)).collect(),
-        response_add: cfg
-            .response_add
-            .into_iter()
-            .map(|p| hdr_pair(&p.name, &p.value))
-            .collect(),
+        request_add,
+        request_set,
+        request_remove,
+        response_add: parse_header_pairs(cfg.response_add, "response_add").unwrap(),
         response_remove: cfg.response_remove.into_iter().map(|n| hdr_name(&n)).collect(),
-        response_set: cfg
-            .response_set
-            .into_iter()
-            .map(|p| hdr_pair(&p.name, &p.value))
-            .collect(),
+        response_set: parse_header_pairs(cfg.response_set, "response_set").unwrap(),
     }
 }
 

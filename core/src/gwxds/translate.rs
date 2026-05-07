@@ -34,12 +34,13 @@ use tracing::warn;
 
 use crate::config::{
     AdminConfig, BodyLimitsConfig, Cluster, Config, Endpoint, FailureMode, FilterChainConfig,
-    FilterEntry, InsecureOptions, Listener, ProtocolKind, RedirectAction, Route, RuntimeConfig,
+    FilterEntry, HeaderNameValue, InsecureOptions, Listener, ProtocolKind, RedirectAction,
+    RequestHeaderModifier, Route, RuntimeConfig,
 };
 
 use super::proto::{
-    Backend, BackendTls, Listener as GwListener, Protocol, RequestRedirect as ProtoRequestRedirect, Resource,
-    Route as GwRoute, TlsConfig,
+    Backend, BackendTls, Listener as GwListener, Protocol, RequestRedirect as ProtoRequestRedirect,
+    RequestHeaderModifier as ProtoRequestHeaderModifier, Resource, Route as GwRoute, TlsConfig,
 };
 
 /// Groups listeners that share the same bind parameters so their routes are merged into one router.
@@ -200,6 +201,10 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
 
     for gw_route in &resource.routes {
         let redirect_cfg = gw_route.request_redirect.as_ref().and_then(proto_redirect_to_action);
+        let hdr_modifier = gw_route
+            .request_header_modifier
+            .as_ref()
+            .and_then(proto_http_request_header_modifier);
 
         if gw_route.backends.is_empty() && redirect_cfg.is_none() {
             continue;
@@ -264,6 +269,7 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
                     host: host.clone(),
                     headers: None,
                     redirect: redirect_cfg.clone(),
+                    request_header_modifier: hdr_modifier.clone(),
                     cluster: Arc::from(cluster_name.as_str()),
                 })
                 .collect()
@@ -271,7 +277,15 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
             gw_route
                 .matches
                 .iter()
-                .flat_map(|m| expand_route_match(m, &cluster_name, &hostnames, redirect_cfg.clone()))
+                .flat_map(|m| {
+                    expand_route_match(
+                        m,
+                        &cluster_name,
+                        &hostnames,
+                        redirect_cfg.clone(),
+                        hdr_modifier.clone(),
+                    )
+                })
                 .collect()
         };
 
@@ -279,6 +293,31 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
     }
 
     (routes, clusters)
+}
+
+fn proto_http_request_header_modifier(p: &ProtoRequestHeaderModifier) -> Option<RequestHeaderModifier> {
+    let set: Vec<HeaderNameValue> = p
+        .set
+        .iter()
+        .map(|h| HeaderNameValue {
+            name: h.name.clone(),
+            value: h.value.clone(),
+        })
+        .collect();
+    let add: Vec<HeaderNameValue> = p
+        .add
+        .iter()
+        .map(|h| HeaderNameValue {
+            name: h.name.clone(),
+            value: h.value.clone(),
+        })
+        .collect();
+    let remove = p.remove.clone();
+    if set.is_empty() && add.is_empty() && remove.is_empty() {
+        None
+    } else {
+        Some(RequestHeaderModifier { set, add, remove })
+    }
 }
 
 fn proto_redirect_to_action(r: &ProtoRequestRedirect) -> Option<RedirectAction> {
@@ -367,6 +406,7 @@ fn expand_route_match(
     cluster_name: &str,
     hostnames: &[Option<String>],
     redirect: Option<RedirectAction>,
+    request_header_modifier: Option<RequestHeaderModifier>,
 ) -> Vec<Route> {
     let (path_prefix, path_exact, path_regex) = resolve_path_match(m);
     let headers = if m.headers.is_empty() { None } else { Some(m.headers.clone()) };
@@ -382,6 +422,7 @@ fn expand_route_match(
             host: host.clone(),
             headers: headers.clone(),
             redirect: redirect.clone(),
+            request_header_modifier: request_header_modifier.clone(),
             cluster: Arc::from(cluster_name),
         })
         .collect()
@@ -604,6 +645,7 @@ mod lb_yaml_tests {
                 hostnames: vec![],
                 matches: vec![],
                 request_redirect: None,
+                request_header_modifier: None,
                 backends: vec![
                     Backend {
                         host: "a.ns.svc.cluster.local".into(),
@@ -674,6 +716,7 @@ mod merge_tests {
                 hostnames: vec![],
                 matches: vec![],
                 request_redirect: None,
+                request_header_modifier: None,
                 backends: vec![backend.clone()],
             }],
         };
@@ -694,6 +737,7 @@ mod merge_tests {
                 hostnames: vec![],
                 matches: vec![],
                 request_redirect: None,
+                request_header_modifier: None,
                 backends: vec![backend],
             }],
         };

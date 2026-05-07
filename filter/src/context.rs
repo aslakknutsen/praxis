@@ -11,6 +11,23 @@ use praxis_core::{connectivity::Upstream, health::HealthRegistry};
 use crate::{body::BodyMode, pipeline::body::merge_body_mode, results::FilterResultSet};
 
 // -----------------------------------------------------------------------------
+// PendingRequestHeaderOp
+// -----------------------------------------------------------------------------
+
+/// Ordered downstream request header mutation (remove / set / add).
+///
+/// Applied after the request-phase pipeline so all filters enqueue ops in order.
+#[derive(Debug, Clone)]
+pub enum PendingRequestHeaderOp {
+    /// Strip every header field whose name matches (Gateway `remove`).
+    Remove(String),
+    /// Replace the header value when present (Gateway `set`).
+    Set(String, String),
+    /// Append another field line/value for the header (Gateway `add`).
+    Add(String, String),
+}
+
+// -----------------------------------------------------------------------------
 // HttpFilterContext
 // -----------------------------------------------------------------------------
 
@@ -40,6 +57,9 @@ pub struct HttpFilterContext<'a> {
 
     /// Extra headers to inject into the upstream request.
     pub extra_request_headers: Vec<(Cow<'static, str>, String)>,
+
+    /// Sequential request header mutations (Gateway-style ordering across filters).
+    pub pending_request_header_ops: Vec<PendingRequestHeaderOp>,
 
     /// Filter result map: `filter_name` -> result entries.
     ///

@@ -73,6 +73,10 @@ pub struct Route {
     #[serde(default)]
     pub redirect: Option<RedirectAction>,
 
+    /// Request header changes after this route matches (Gateway RequestHeaderModifier).
+    #[serde(default)]
+    pub request_header_modifier: Option<RequestHeaderModifier>,
+
     /// Name of the cluster to route matched requests to.
     pub cluster: Arc<str>,
 }
@@ -86,6 +90,33 @@ pub struct RedirectAction {
 
     /// `Location` header template (same placeholders as the `redirect` filter).
     pub location: String,
+}
+
+/// One set/add header entry (Gateway `HTTPHeader`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HeaderNameValue {
+    /// Case-insensitive header field name.
+    pub name: String,
+    /// Field value(s); RFC 7230 formatting when multiple comma-separated values are required.
+    pub value: String,
+}
+
+/// Gateway `HTTPHeaderFilter` for the request (set / add / remove).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestHeaderModifier {
+    /// Headers to overwrite if present (Gateway `set`).
+    #[serde(default)]
+    pub set: Vec<HeaderNameValue>,
+
+    /// Headers to append (Gateway `add`).
+    #[serde(default)]
+    pub add: Vec<HeaderNameValue>,
+
+    /// Header names to strip (Gateway `remove`).
+    #[serde(default)]
+    pub remove: Vec<String>,
 }
 
 // -----------------------------------------------------------------------------

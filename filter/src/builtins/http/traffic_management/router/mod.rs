@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use http::HeaderMap;
-use praxis_core::config::Route;
+use praxis_core::config::{RequestHeaderModifier, Route};
 use tracing::{debug, trace};
 
 use self::{
@@ -34,6 +34,7 @@ use crate::{
     FilterError,
     actions::{FilterAction, Rejection},
     filter::{HttpFilter, HttpFilterContext},
+    PendingRequestHeaderOp,
 };
 
 // -----------------------------------------------------------------------------
@@ -91,6 +92,49 @@ struct ResolvedRoute {
     wildcard_suffix: Option<String>,
 }
 
+fn validate_request_header_modifier(m: &RequestHeaderModifier) -> Result<(), FilterError> {
+    for pairs in [&m.set[..], &m.add[..]] {
+        for h in pairs {
+            http::header::HeaderName::from_bytes(h.name.as_bytes()).map_err(|_| {
+                let msg: FilterError =
+                    format!("router: invalid request_header_modifier header name '{}'", h.name).into();
+                msg
+            })?;
+            http::header::HeaderValue::from_str(&h.value).map_err(|_| {
+                let msg: FilterError = format!(
+                    "router: invalid request_header_modifier value for '{}'",
+                    h.name
+                )
+                .into();
+                msg
+            })?;
+        }
+    }
+    for name in &m.remove {
+        http::header::HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
+            let msg: FilterError =
+                format!("router: invalid request_header_modifier remove name '{name}'").into();
+            msg
+        })?;
+    }
+    Ok(())
+}
+
+fn enqueue_route_request_header_ops(ctx: &mut HttpFilterContext<'_>, m: &RequestHeaderModifier) {
+    for name in &m.remove {
+        ctx.pending_request_header_ops
+            .push(PendingRequestHeaderOp::Remove(name.clone()));
+    }
+    for h in &m.set {
+        ctx.pending_request_header_ops
+            .push(PendingRequestHeaderOp::Set(h.name.clone(), h.value.clone()));
+    }
+    for h in &m.add {
+        ctx.pending_request_header_ops
+            .push(PendingRequestHeaderOp::Add(h.name.clone(), h.value.clone()));
+    }
+}
+
 impl RouterFilter {
     /// Create a router from a list of routes.
     ///
@@ -111,6 +155,7 @@ impl RouterFilter {
     ///         host: None,
     ///         headers: None,
     ///         redirect: None,
+    ///         request_header_modifier: None,
     ///         cluster: "default".into(),
     ///     },
     ///     Route {
@@ -121,12 +166,18 @@ impl RouterFilter {
     ///         host: None,
     ///         headers: None,
     ///         redirect: None,
+    ///         request_header_modifier: None,
     ///         cluster: "api".into(),
     ///     },
     /// ])
     /// .unwrap();
     /// ```
     pub fn new(routes: Vec<Route>) -> Result<Self, FilterError> {
+        for route in &routes {
+            if let Some(ref m) = route.request_header_modifier {
+                validate_request_header_modifier(m)?;
+            }
+        }
         let mut routes = routes;
         routes.sort_by_key(|b| std::cmp::Reverse(path_specificity(b)));
         let resolved: Vec<ResolvedRoute> = routes
@@ -213,6 +264,9 @@ impl HttpFilter for RouterFilter {
                 "route matched"
             );
             ctx.cluster = Some(Arc::clone(&route.cluster));
+            if let Some(ref m) = route.request_header_modifier {
+                enqueue_route_request_header_ops(ctx, m);
+            }
             Ok(FilterAction::Continue)
         } else {
             debug!(path = %path, "no route matched");

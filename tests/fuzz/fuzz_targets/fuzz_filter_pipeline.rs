@@ -54,6 +54,7 @@ fuzz_target!(|data: &str| {
             cluster: None,
             executed_filter_indices: Vec::new(),
             extra_request_headers: Vec::new(),
+            pending_request_header_ops: Vec::new(),
             filter_results: std::collections::HashMap::new(),
             health_registry: None,
             request: &request,

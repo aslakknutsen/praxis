@@ -17,8 +17,6 @@ mod ops;
 )]
 mod tests;
 
-use std::borrow::Cow;
-
 use async_trait::async_trait;
 use serde::Deserialize;
 use tracing::trace;
@@ -28,6 +26,7 @@ use crate::{
     FilterAction, FilterError,
     factory::parse_filter_config,
     filter::{HttpFilter, HttpFilterContext},
+    PendingRequestHeaderOp,
 };
 
 // -----------------------------------------------------------------------------
@@ -41,6 +40,14 @@ pub(crate) struct HeaderFilterConfig {
     /// Headers to append to the upstream request.
     #[serde(default)]
     pub(crate) request_add: Vec<HeaderPair>,
+
+    /// Headers to set on the upstream request (overwrite existing values).
+    #[serde(default)]
+    pub(crate) request_set: Vec<HeaderPair>,
+
+    /// Header names to remove from the upstream request.
+    #[serde(default)]
+    pub(crate) request_remove: Vec<String>,
 
     /// Headers to append to the downstream response.
     #[serde(default)]
@@ -107,8 +114,14 @@ pub(crate) struct HeaderPair {
 /// assert_eq!(filter.name(), "headers");
 /// ```
 pub struct HeaderFilter {
-    /// Headers to append to the upstream request (raw strings for `Cow` output).
+    /// Headers to append to the upstream request.
     pub(crate) request_add: Vec<(String, String)>,
+
+    /// Headers to overwrite on the upstream request.
+    pub(crate) request_set: Vec<(String, String)>,
+
+    /// Header names to strip from the upstream request.
+    pub(crate) request_remove: Vec<http::header::HeaderName>,
 
     /// Pre-parsed headers to append to the downstream response.
     pub(crate) response_add: Vec<(http::header::HeaderName, http::header::HeaderValue)>,
@@ -132,8 +145,21 @@ impl HeaderFilter {
         let cfg: HeaderFilterConfig = parse_filter_config("headers", config)?;
 
         let request_add = validate_raw_header_pairs(cfg.request_add, "request_add")?;
+        let request_set = validate_raw_header_pairs(cfg.request_set, "request_set")?;
         let response_add = parse_header_pairs(cfg.response_add, "response_add")?;
         let response_set = parse_header_pairs(cfg.response_set, "response_set")?;
+
+        let request_remove = cfg
+            .request_remove
+            .into_iter()
+            .map(|name| {
+                http::header::HeaderName::from_bytes(name.as_bytes()).map_err(|_e| {
+                    let msg: FilterError =
+                        format!("headers filter: invalid header name '{name}' in request_remove").into();
+                    msg
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
         let response_remove = cfg
             .response_remove
@@ -149,6 +175,8 @@ impl HeaderFilter {
 
         Ok(Box::new(Self {
             request_add,
+            request_set,
+            request_remove,
             response_add,
             response_remove,
             response_set,
@@ -163,10 +191,20 @@ impl HttpFilter for HeaderFilter {
     }
 
     async fn on_request(&self, ctx: &mut HttpFilterContext<'_>) -> Result<FilterAction, FilterError> {
+        for name in &self.request_remove {
+            trace!(header = %name, "removing request header");
+            ctx.pending_request_header_ops
+                .push(PendingRequestHeaderOp::Remove(name.as_str().to_owned()));
+        }
+        for (name, value) in &self.request_set {
+            trace!(header = %name, "setting request header");
+            ctx.pending_request_header_ops
+                .push(PendingRequestHeaderOp::Set(name.clone(), value.clone()));
+        }
         for (name, value) in &self.request_add {
             trace!(header = %name, "adding request header");
-            ctx.extra_request_headers
-                .push((Cow::Owned(name.clone()), value.clone()));
+            ctx.pending_request_header_ops
+                .push(PendingRequestHeaderOp::Add(name.clone(), value.clone()));
         }
         Ok(FilterAction::Continue)
     }

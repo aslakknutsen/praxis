@@ -30,7 +30,7 @@ pub use builtins::{
     RouterFilter, http::payload_processing::compression_config::CompressionConfig, normalize_rewritten_path,
 };
 pub use condition::{should_execute, should_execute_response, should_execute_response_ref};
-pub use context::{HttpFilterContext, Request, Response};
+pub use context::{HttpFilterContext, PendingRequestHeaderOp, Request, Response};
 pub use factory::{FilterFactory, HttpFilterFactory, TcpFilterFactory, http_builtin, parse_filter_config, tcp_builtin};
 pub use filter::{Filter, FilterContext, FilterError, HttpFilter};
 pub use pipeline::FilterPipeline;
@@ -233,6 +233,7 @@ pub(crate) mod test_utils {
             cluster: None,
             executed_filter_indices: Vec::new(),
             extra_request_headers: Vec::new(),
+            pending_request_header_ops: Vec::new(),
             filter_results: std::collections::HashMap::new(),
             health_registry: None,
             request: req,

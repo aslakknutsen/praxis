@@ -154,6 +154,7 @@ macro_rules! filter_context {
             cluster: $ctx.cluster.take(),
             executed_filter_indices: Vec::new(),
             extra_request_headers: Vec::new(),
+            pending_request_header_ops: Vec::new(),
             filter_results: std::collections::HashMap::new(),
             health_registry: $pipeline.health_registry(),
             request: $request,

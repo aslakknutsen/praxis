@@ -132,6 +132,19 @@ message RequestRedirect {
   uint32 status_code = 5;
 }
 
+// Named header value (Gateway HTTPHeader).
+message HeaderNameValue {
+  string name = 1;
+  string value = 2;
+}
+
+// RequestHeaderModifier mirrors Gateway API HTTPHeaderFilter for request rules.
+message RequestHeaderModifier {
+  repeated HeaderNameValue set = 1;
+  repeated HeaderNameValue add = 2;
+  repeated string remove = 3;
+}
+
 // RouteMatch describes matching criteria for a single route rule.
 message RouteMatch {
   // HTTP path prefix match. Empty means match all paths.
@@ -160,6 +173,8 @@ message Route {
   repeated Backend backends = 5;
   // When set, matched requests are redirected (Gateway RequestRedirect filter).
   RequestRedirect request_redirect = 6;
+  // Per-route request header changes (Gateway RequestHeaderModifier). Applied after match.
+  RequestHeaderModifier request_header_modifier = 7;
 }
 
 // Resource is the top-level xDS resource served to a gwxds-capable proxy.

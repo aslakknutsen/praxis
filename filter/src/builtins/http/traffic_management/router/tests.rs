@@ -28,6 +28,7 @@ fn match_root() {
         host: None,
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "default".into(),
     }]);
     let route = router.match_route("/anything", None, &HeaderMap::new(), None).unwrap();
@@ -45,6 +46,7 @@ fn longest_prefix_wins() {
             host: None,
             headers: None,
             redirect: None,
+            request_header_modifier: None,
             cluster: "default".into(),
         },
         Route {
@@ -55,6 +57,7 @@ fn longest_prefix_wins() {
             host: None,
             headers: None,
             redirect: None,
+            request_header_modifier: None,
             cluster: "api".into(),
         },
     ]);
@@ -77,6 +80,7 @@ fn host_filtering() {
             host: Some("api.example.com".into()),
             headers: None,
             redirect: None,
+            request_header_modifier: None,
             cluster: "api".into(),
         },
         Route {
@@ -87,6 +91,7 @@ fn host_filtering() {
             host: None,
             headers: None,
             redirect: None,
+            request_header_modifier: None,
             cluster: "default".into(),
         },
     ]);
@@ -118,6 +123,7 @@ fn host_with_port() {
         host: Some("api.example.com".into()),
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "api".into(),
     }]);
 
@@ -140,6 +146,7 @@ fn no_match() {
         host: None,
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "api".into(),
     }]);
     assert!(
@@ -158,6 +165,7 @@ fn no_match_wrong_host() {
         host: Some("api.example.com".into()),
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "api".into(),
     }]);
     assert!(
@@ -203,6 +211,7 @@ async fn on_request_sets_cluster_on_match() {
         host: None,
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "default".into(),
     }]);
     let req = crate::test_utils::make_request(http::Method::GET, "/");
@@ -229,6 +238,7 @@ async fn on_request_rejects_on_no_match() {
         host: None,
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "api".into(),
     }]);
     let req = crate::test_utils::make_request(http::Method::GET, "/other");
@@ -252,6 +262,7 @@ async fn on_request_combined_host_and_path() {
             host: Some("api.example.com".into()),
             headers: None,
             redirect: None,
+            request_header_modifier: None,
             cluster: "api".into(),
         },
         Route {
@@ -262,6 +273,7 @@ async fn on_request_combined_host_and_path() {
             host: None,
             headers: None,
             redirect: None,
+            request_header_modifier: None,
             cluster: "default".into(),
         },
     ]);
@@ -296,6 +308,7 @@ fn route_matches_by_header() {
         host: None,
         headers: Some(HashMap::from([("x-model".into(), "claude-sonnet-4-5".into())])),
         redirect: None,
+        request_header_modifier: None,
         cluster: "claude_sonnet".into(),
     }]);
 
@@ -318,6 +331,7 @@ fn route_skips_mismatched_header() {
         host: None,
         headers: Some(HashMap::from([("x-model".into(), "claude-sonnet-4-5".into())])),
         redirect: None,
+        request_header_modifier: None,
         cluster: "claude_sonnet".into(),
     }]);
 
@@ -340,6 +354,7 @@ fn route_with_headers_wins_over_plain() {
             host: None,
             headers: Some(HashMap::from([("x-model".into(), "claude-sonnet-4-5".into())])),
             redirect: None,
+            request_header_modifier: None,
             cluster: "claude_sonnet".into(),
         },
         Route {
@@ -350,6 +365,7 @@ fn route_with_headers_wins_over_plain() {
             host: None,
             headers: None,
             redirect: None,
+            request_header_modifier: None,
             cluster: "default".into(),
         },
     ]);
@@ -374,6 +390,7 @@ fn route_without_headers_used_as_fallback() {
             host: None,
             headers: Some(HashMap::from([("x-model".into(), "claude-sonnet-4-5".into())])),
             redirect: None,
+            request_header_modifier: None,
             cluster: "claude_sonnet".into(),
         },
         Route {
@@ -384,6 +401,7 @@ fn route_without_headers_used_as_fallback() {
             host: None,
             headers: None,
             redirect: None,
+            request_header_modifier: None,
             cluster: "default".into(),
         },
     ]);
@@ -408,6 +426,7 @@ async fn host_falls_back_to_uri_authority() {
             host: Some("api.example.com".into()),
             headers: None,
             redirect: None,
+            request_header_modifier: None,
             cluster: "api".into(),
         },
         Route {
@@ -418,6 +437,7 @@ async fn host_falls_back_to_uri_authority() {
             host: None,
             headers: None,
             redirect: None,
+            request_header_modifier: None,
             cluster: "default".into(),
         },
     ]);
@@ -446,6 +466,7 @@ fn multi_value_header_matches_any() {
         host: None,
         headers: Some(HashMap::from([("x-model".into(), "claude-sonnet-4-5".into())])),
         redirect: None,
+        request_header_modifier: None,
         cluster: "claude_sonnet".into(),
     }]);
 
@@ -469,6 +490,7 @@ fn ipv6_host_with_port() {
         host: Some("[::1]".into()),
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "ipv6".into(),
     }]);
 
@@ -486,6 +508,7 @@ fn ipv6_host_without_port() {
         host: Some("[::1]".into()),
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "ipv6".into(),
     }]);
 
@@ -513,6 +536,7 @@ fn route_with_host_and_headers() {
             host: Some("api.example.com".into()),
             headers: Some(HashMap::from([("x-version".into(), "v2".into())])),
             redirect: None,
+            request_header_modifier: None,
             cluster: "api-v2".into(),
         },
         Route {
@@ -523,6 +547,7 @@ fn route_with_host_and_headers() {
             host: None,
             headers: None,
             redirect: None,
+            request_header_modifier: None,
             cluster: "default".into(),
         },
     ]);
@@ -547,6 +572,7 @@ fn same_prefix_same_constraints_first_wins() {
             host: None,
             headers: Some(HashMap::from([("x-a".into(), "1".into())])),
             redirect: None,
+            request_header_modifier: None,
             cluster: "first".into(),
         },
         Route {
@@ -557,6 +583,7 @@ fn same_prefix_same_constraints_first_wins() {
             host: None,
             headers: Some(HashMap::from([("x-b".into(), "2".into())])),
             redirect: None,
+            request_header_modifier: None,
             cluster: "second".into(),
         },
     ]);
@@ -581,6 +608,7 @@ fn empty_headers_map_matches_everything() {
         host: None,
         headers: Some(HashMap::new()),
         redirect: None,
+        request_header_modifier: None,
         cluster: "vacuous".into(),
     }]);
 
@@ -598,6 +626,7 @@ async fn on_request_strips_port_from_host_header() {
         host: Some("example.com".into()),
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "example".into(),
     }]);
 
@@ -626,6 +655,7 @@ fn route_matches_request_path_only_hit() {
         host: None,
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "api".into(),
     };
     let resolved = ResolvedRoute {
@@ -648,6 +678,7 @@ fn route_matches_request_path_miss() {
         host: None,
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "api".into(),
     };
     let resolved = ResolvedRoute {
@@ -670,6 +701,7 @@ fn route_matches_request_host_hit() {
         host: Some("example.com".into()),
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "ex".into(),
     };
     let resolved = ResolvedRoute {
@@ -692,6 +724,7 @@ fn route_matches_request_host_miss() {
         host: Some("example.com".into()),
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "ex".into(),
     };
     let resolved = ResolvedRoute {
@@ -714,6 +747,7 @@ fn route_matches_request_host_miss_when_no_host() {
         host: Some("example.com".into()),
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "ex".into(),
     };
     let resolved = ResolvedRoute {
@@ -736,6 +770,7 @@ fn route_matches_request_header_hit() {
         host: None,
         headers: Some(HashMap::from([("x-key".into(), "val".into())])),
         redirect: None,
+        request_header_modifier: None,
         cluster: "h".into(),
     };
     let resolved = ResolvedRoute {
@@ -760,6 +795,7 @@ fn route_matches_request_header_miss() {
         host: None,
         headers: Some(HashMap::from([("x-key".into(), "val".into())])),
         redirect: None,
+        request_header_modifier: None,
         cluster: "h".into(),
     };
     let resolved = ResolvedRoute {
@@ -784,6 +820,7 @@ fn route_matches_request_compound() {
         host: Some("example.com".into()),
         headers: Some(HashMap::from([("x-ver".into(), "2".into())])),
         redirect: None,
+        request_header_modifier: None,
         cluster: "c".into(),
     };
     let resolved = ResolvedRoute {
@@ -816,6 +853,7 @@ fn update_best_match_prefers_more_constraints_at_same_prefix() {
         host: None,
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "a".into(),
     };
     let route_b = Route {
@@ -826,6 +864,7 @@ fn update_best_match_prefers_more_constraints_at_same_prefix() {
         host: Some("example.com".into()),
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "b".into(),
     };
     let best = update_best_match(None, &route_a);
@@ -847,6 +886,7 @@ fn update_best_match_prefers_longer_prefix() {
         host: None,
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "short".into(),
     };
     let long = Route {
@@ -857,6 +897,7 @@ fn update_best_match_prefers_longer_prefix() {
         host: None,
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "long".into(),
     };
     let best = update_best_match(None, &short);
@@ -874,6 +915,7 @@ fn update_best_match_keeps_current_when_dominated() {
         host: Some("example.com".into()),
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "first".into(),
     };
     let second = Route {
@@ -884,6 +926,7 @@ fn update_best_match_keeps_current_when_dominated() {
         host: None,
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "second".into(),
     };
     let best = update_best_match(None, &first);
@@ -905,6 +948,7 @@ fn should_stop_early_true_when_prefix_shorter_than_best() {
         host: None,
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "best".into(),
     };
     let shorter = Route {
@@ -915,6 +959,7 @@ fn should_stop_early_true_when_prefix_shorter_than_best() {
         host: None,
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "shorter".into(),
     };
     let best = Some((path_specificity(&best_route), 0, &best_route));
@@ -934,6 +979,7 @@ fn should_stop_early_false_when_prefix_equal_to_best() {
         host: None,
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "best".into(),
     };
     let same = Route {
@@ -944,6 +990,7 @@ fn should_stop_early_false_when_prefix_equal_to_best() {
         host: None,
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "same".into(),
     };
     let best = Some((path_specificity(&best_route), 0, &best_route));
@@ -963,6 +1010,7 @@ fn should_stop_early_false_when_no_best() {
         host: None,
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "any".into(),
     };
     assert!(
@@ -981,6 +1029,7 @@ fn path_prefix_without_trailing_slash_is_allowed() {
         host: None,
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "api".into(),
     }])
     .expect("Gateway-aligned prefix should not require trailing slash");
@@ -1002,6 +1051,7 @@ fn path_prefix_exact_segment_matches_without_extra_slash() {
         host: None,
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "t".into(),
     }]);
     for path in ["/test", "/test/", "/test/x"] {
@@ -1026,6 +1076,7 @@ fn wildcard_host_matches_subdomain() {
         host: Some("*.example.com".into()),
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "wildcard".into(),
     }]);
 
@@ -1048,6 +1099,7 @@ fn wildcard_host_does_not_match_bare_domain() {
         host: Some("*.example.com".into()),
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "wildcard".into(),
     }]);
 
@@ -1069,6 +1121,7 @@ fn wildcard_host_does_not_match_multi_level_subdomain() {
         host: Some("*.example.com".into()),
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "wildcard".into(),
     }]);
 
@@ -1090,6 +1143,7 @@ fn wildcard_host_with_port() {
         host: Some("*.example.com".into()),
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "wildcard".into(),
     }]);
 
@@ -1112,6 +1166,7 @@ fn wildcard_host_case_insensitive() {
         host: Some("*.Example.COM".into()),
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "wildcard".into(),
     }]);
 
@@ -1135,6 +1190,7 @@ fn wildcard_host_with_fallback() {
             host: Some("*.example.com".into()),
             headers: None,
             redirect: None,
+            request_header_modifier: None,
             cluster: "wildcard".into(),
         },
         Route {
@@ -1145,6 +1201,7 @@ fn wildcard_host_with_fallback() {
             host: None,
             headers: None,
             redirect: None,
+            request_header_modifier: None,
             cluster: "default".into(),
         },
     ]);
@@ -1175,6 +1232,7 @@ fn exact_host_wins_over_wildcard_same_constraints() {
             host: Some("api.example.com".into()),
             headers: None,
             redirect: None,
+            request_header_modifier: None,
             cluster: "exact".into(),
         },
         Route {
@@ -1185,6 +1243,7 @@ fn exact_host_wins_over_wildcard_same_constraints() {
             host: Some("*.example.com".into()),
             headers: None,
             redirect: None,
+            request_header_modifier: None,
             cluster: "wildcard".into(),
         },
     ]);
@@ -1208,6 +1267,7 @@ fn wildcard_host_does_not_match_empty_subdomain() {
         host: Some("*.example.com".into()),
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "wildcard".into(),
     }]);
 
@@ -1230,6 +1290,7 @@ async fn on_request_wildcard_host_via_host_header() {
             host: Some("*.example.com".into()),
             headers: None,
             redirect: None,
+            request_header_modifier: None,
             cluster: "wildcard".into(),
         },
         Route {
@@ -1240,6 +1301,7 @@ async fn on_request_wildcard_host_via_host_header() {
             host: None,
             headers: None,
             redirect: None,
+            request_header_modifier: None,
             cluster: "default".into(),
         },
     ]);
@@ -1266,6 +1328,7 @@ async fn on_request_uses_original_path_when_rewritten_path_is_none() {
             host: None,
             headers: None,
             redirect: None,
+            request_header_modifier: None,
             cluster: "api".into(),
         },
         Route {
@@ -1276,6 +1339,7 @@ async fn on_request_uses_original_path_when_rewritten_path_is_none() {
             host: None,
             headers: None,
             redirect: None,
+            request_header_modifier: None,
             cluster: "default".into(),
         },
     ]);
@@ -1304,6 +1368,7 @@ async fn on_request_uses_rewritten_path_when_set() {
             host: None,
             headers: None,
             redirect: None,
+            request_header_modifier: None,
             cluster: "internal".into(),
         },
         Route {
@@ -1314,6 +1379,7 @@ async fn on_request_uses_rewritten_path_when_set() {
             host: None,
             headers: None,
             redirect: None,
+            request_header_modifier: None,
             cluster: "default".into(),
         },
     ]);
@@ -1342,6 +1408,7 @@ async fn on_request_rewritten_path_no_match_still_rejects() {
         host: None,
         headers: None,
         redirect: None,
+        request_header_modifier: None,
         cluster: "api".into(),
     }]);
     let req = crate::test_utils::make_request(http::Method::GET, "/api/users");
