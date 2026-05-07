@@ -1164,7 +1164,7 @@ fn wildcard_host_does_not_match_bare_domain() {
 }
 
 #[test]
-fn wildcard_host_does_not_match_multi_level_subdomain() {
+fn wildcard_host_matches_multi_level_subdomain_gateway_semantics() {
     let router = make_router(vec![Route {
         path_prefix: "/".into(),
         path_exact: None,
@@ -1181,8 +1181,8 @@ fn wildcard_host_does_not_match_multi_level_subdomain() {
     assert!(
         router
             .match_route("/", Some("a.b.example.com"), &HeaderMap::new(), None)
-            .is_none(),
-        "*.example.com should not match multi-level subdomain a.b.example.com"
+            .is_some(),
+        "Gateway API: *.example.com matches foo.example.com and foo.bar.example.com"
     );
 }
 

@@ -52,6 +52,42 @@ fn backend_socket_port(b: &Backend) -> u32 {
     }
 }
 
+fn route_namespace_from_key(route_key: &str) -> &str {
+    route_key.split('/').next().unwrap_or("")
+}
+
+/// Turn a bare Kubernetes Service `metadata.name` into a cluster DNS name.
+///
+/// Istio may send `host` as a single DNS label for same-namespace `Service`
+/// backends. The proxy often runs in another namespace; `getaddrinfo` on
+/// `headless:8080` then fails or resolves incorrectly because the pod search
+/// path does not apply the HTTPRoute's namespace. We use the route key prefix
+/// (`namespace/route/rule-index`) as the service namespace.
+///
+/// Cross-namespace backends must arrive as a multi-label FQDN (or IP); we do not
+/// rewrite hosts that already contain `.`.
+fn qualify_k8s_service_host(host: &str, route_key: &str) -> String {
+    if host.eq_ignore_ascii_case("localhost") {
+        return host.to_owned();
+    }
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return host.to_owned();
+    }
+    if host.contains('.') {
+        return host.to_owned();
+    }
+    let ns = route_namespace_from_key(route_key);
+    if ns.is_empty() {
+        return host.to_owned();
+    }
+    format!("{host}.{ns}.svc.cluster.local")
+}
+
+#[inline]
+fn backend_upstream_host(b: &Backend, route_key: &str) -> String {
+    qualify_k8s_service_host(&b.host, route_key)
+}
+
 /// Groups listeners that share the same bind parameters so their routes are merged into one router.
 #[derive(Clone, Copy, Eq, PartialEq, Hash, Ord, PartialOrd)]
 struct MergeKey {
@@ -251,7 +287,7 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
         } else if invalid_backend_ref {
             "__invalid_backend__".to_owned()
         } else if gw_route.backends.len() == 1 {
-            backend_cluster_name(&gw_route.backends[0])
+            backend_cluster_name(&gw_route.backends[0], &gw_route.key)
         } else {
             format!("{}-backends", gw_route.key)
         };
@@ -262,7 +298,11 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
                 .iter()
                 .filter(|b| b.weight > 0)
                 .flat_map(|b| {
-                    let addr = format!("{}:{}", b.host, backend_socket_port(b));
+                    let addr = format!(
+                        "{}:{}",
+                        backend_upstream_host(b, &gw_route.key),
+                        backend_socket_port(b)
+                    );
                     let weight = b.weight as usize;
                     std::iter::repeat_with(move || Endpoint::Simple(addr.clone())).take(weight)
                 })
@@ -368,6 +408,11 @@ fn proto_redirect_to_action(r: &ProtoRequestRedirect) -> Option<RedirectAction> 
 }
 
 /// Effective virtual-host hostnames for this route on its Gateway listener (Gateway API intersection).
+///
+/// Each emitted hostname is **narrowed** to the set of hosts that match both the listener hostname
+/// and the route hostname. Without this, merging multiple HTTP listeners on the same port would let
+/// a route pattern (`*.specific.com`) match requests that never belonged on an exact listener
+/// (`very.specific.com`).
 fn effective_route_hostnames(listener: &GwListener, gw_route: &GwRoute) -> Option<Vec<Option<String>>> {
     let lh = listener.hostname.trim();
     if gw_route.hostnames.is_empty() {
@@ -380,8 +425,12 @@ fn effective_route_hostnames(listener: &GwListener, gw_route: &GwRoute) -> Optio
 
     let mut out = Vec::new();
     for rh in &gw_route.hostnames {
-        if lh.is_empty() || hostname_patterns_overlap(lh, rh) {
+        if lh.is_empty() {
             out.push(Some(rh.clone()));
+            continue;
+        }
+        if let Some(narrowed) = intersect_listener_route_hostname(lh, rh) {
+            out.push(Some(narrowed));
         }
     }
     if out.is_empty() {
@@ -391,42 +440,84 @@ fn effective_route_hostnames(listener: &GwListener, gw_route: &GwRoute) -> Optio
     }
 }
 
-/// Whether `route_host` hostname pattern overlaps `listener_host` (listener hostname from Gateway).
-fn hostname_patterns_overlap(listener_host: &str, route_host: &str) -> bool {
-    let l = listener_host.trim();
-    let r = route_host.trim();
-    if l.eq_ignore_ascii_case(r) {
-        return true;
-    }
+#[derive(Debug, Clone)]
+enum HostPattern {
+    /// Lowercased exact hostname.
+    Exact(String),
+    /// Lowercased suffix after `*.` (no `*.` prefix stored).
+    Wildcard(String),
+}
 
-    let l_wild = l.strip_prefix("*.");
-    let r_wild = r.strip_prefix("*.");
-
-    match (l_wild, r_wild) {
-        (Some(lsuffix), Some(rsuffix)) => {
-            lsuffix.eq_ignore_ascii_case(rsuffix)
-                || lsuffix.ends_with(&format!(".{rsuffix}"))
-                || rsuffix.ends_with(&format!(".{lsuffix}"))
-        }
-        (Some(lsuffix), None) => host_matches_wildcard_suffix(r, lsuffix),
-        (None, Some(rsuffix)) => host_matches_wildcard_suffix(l, rsuffix),
-        (None, None) => false,
+fn parse_host_pattern(raw: &str) -> HostPattern {
+    let h = raw.trim();
+    if let Some(suf) = h.strip_prefix("*.") {
+        HostPattern::Wildcard(suf.to_ascii_lowercase())
+    } else {
+        HostPattern::Exact(h.to_ascii_lowercase())
     }
 }
 
-/// `*.suffix` Gateway pattern: one DNS label + suffix domain (matches router wildcard semantics).
-fn host_matches_wildcard_suffix(host: &str, suffix_after_star_dot: &str) -> bool {
+fn pattern_to_host_header(p: &HostPattern) -> String {
+    match p {
+        HostPattern::Exact(e) => e.clone(),
+        HostPattern::Wildcard(s) => format!("*.{s}"),
+    }
+}
+
+fn patterns_intersect(a: HostPattern, b: HostPattern) -> Option<HostPattern> {
+    use HostPattern::{Exact, Wildcard};
+    match (a, b) {
+        (Exact(e), Wildcard(s)) | (Wildcard(s), Exact(e)) => {
+            if host_matches_wildcard_suffix_multi(&e, &s) {
+                Some(Exact(e))
+            } else {
+                None
+            }
+        }
+        (Exact(e1), Exact(e2)) => {
+            if e1 == e2 {
+                Some(Exact(e1))
+            } else {
+                None
+            }
+        }
+        (Wildcard(s1), Wildcard(s2)) => {
+            if s1 == s2 {
+                return Some(Wildcard(s1));
+            }
+            let (long, short) = if s1.len() >= s2.len() {
+                (s1, s2)
+            } else {
+                (s2, s1)
+            };
+            if long.len() > short.len() && long.ends_with(&format!(".{short}")) {
+                return Some(Wildcard(long));
+            }
+            None
+        }
+    }
+}
+
+/// Intersection of Gateway listener hostname with HTTPRoute hostname (Gateway API).
+fn intersect_listener_route_hostname(listener_raw: &str, route_raw: &str) -> Option<String> {
+    let l = parse_host_pattern(listener_raw);
+    let r = parse_host_pattern(route_raw);
+    patterns_intersect(l, r).map(|p| pattern_to_host_header(&p))
+}
+
+/// `*.suffix` pattern: host must end with `.suffix` with a non-empty prefix (any number of labels).
+fn host_matches_wildcard_suffix_multi(host: &str, suffix_after_star_dot: &str) -> bool {
     let h = host.to_ascii_lowercase();
     let suffix = format!(".{}", suffix_after_star_dot.to_ascii_lowercase());
     if h.len() <= suffix.len() || !h.ends_with(&suffix) {
         return false;
     }
     let prefix = &h[..h.len() - suffix.len()];
-    !prefix.is_empty() && !prefix.contains('.')
+    !prefix.is_empty()
 }
 
-fn backend_cluster_name(backend: &Backend) -> String {
-    format!("{}:{}", backend.host, backend.port)
+fn backend_cluster_name(backend: &Backend, route_key: &str) -> String {
+    format!("{}:{}", backend_upstream_host(backend, route_key), backend_socket_port(backend))
 }
 
 fn expand_route_match(
@@ -532,7 +623,7 @@ fn build_lb_entry(gw_routes: &[GwRoute]) -> FilterEntry {
         }
 
         let cluster_name = if gw_route.backends.len() == 1 {
-            backend_cluster_name(&gw_route.backends[0])
+            backend_cluster_name(&gw_route.backends[0], &gw_route.key)
         } else {
             format!("{}-backends", gw_route.key)
         };
@@ -542,11 +633,12 @@ fn build_lb_entry(gw_routes: &[GwRoute]) -> FilterEntry {
         }
         seen.insert(cluster_name.clone(), ());
 
+        let route_key = gw_route.key.as_str();
         let endpoints: Vec<YamlValue> = gw_route
             .backends
             .iter()
             .filter(|b| b.weight > 0)
-            .map(lb_endpoint_yaml)
+            .map(|b| lb_endpoint_yaml(b, route_key))
             .collect();
 
         let mut cluster_map = serde_yaml::Mapping::new();
@@ -638,8 +730,8 @@ fn k(s: &str) -> YamlValue {
 ///
 /// Matches [`Endpoint`](crate::config::Endpoint) untagged serde: plain string (implicit weight 1)
 /// or `{ address, weight }`.
-fn lb_endpoint_yaml(b: &Backend) -> YamlValue {
-    let address = format!("{}:{}", b.host, backend_socket_port(b));
+fn lb_endpoint_yaml(b: &Backend, route_key: &str) -> YamlValue {
+    let address = format!("{}:{}", backend_upstream_host(b, route_key), backend_socket_port(b));
     let weight = b.weight;
     debug_assert!(weight > 0, "lb_endpoint_yaml expects callers to filter weight > 0");
     if weight == 1 {
@@ -815,6 +907,48 @@ mod lb_yaml_tests {
             "svc.ns.svc.cluster.local:3000"
         );
     }
+
+    #[test]
+    fn lb_entry_qualifies_short_same_namespace_service_host() {
+        let resource = Resource {
+            key: "ns/gw/http".into(),
+            listener: Some(super::super::proto::Listener {
+                key: "ns/gw/http".into(),
+                hostname: "".into(),
+                port: 80,
+                protocol: 1,
+                tls: None,
+                allowed_routes: vec![],
+            }),
+            routes: vec![GwRoute {
+                key: "gateway-conformance-infra/service-types/0".into(),
+                listener_key: "ns/gw/http".into(),
+                hostnames: vec![],
+                matches: vec![],
+                request_redirect: None,
+                request_header_modifier: None,
+                invalid_backend_ref: false,
+                backends: vec![Backend {
+                    host: "headless".into(),
+                    port: 8080,
+                    dial_port: 3000,
+                    weight: 1,
+                    inference_pool: None,
+                    tls: None,
+                }],
+            }],
+        };
+
+        let entry = build_lb_entry(&resource.routes);
+        let parsed: LoadBalancerYaml =
+            serde_yaml::from_value(entry.config.clone()).expect("load_balancer filter config should deserialize");
+
+        assert_eq!(parsed.clusters.len(), 1);
+        assert_eq!(
+            parsed.clusters[0].endpoints[0].address(),
+            "headless.gateway-conformance-infra.svc.cluster.local:3000"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -823,9 +957,31 @@ mod merge_tests {
 
     #[test]
     fn hostname_overlap_wildcard_and_exact() {
-        assert!(hostname_patterns_overlap("*.wildcard.io", "foo.wildcard.io"));
-        assert!(!hostname_patterns_overlap("*.wildcard.io", "wildcard.io"));
-        assert!(hostname_patterns_overlap("very.specific.com", "very.specific.com"));
+        assert!(intersect_listener_route_hostname("*.wildcard.io", "foo.wildcard.io").is_some());
+        assert!(intersect_listener_route_hostname("*.wildcard.io", "foo.bar.wildcard.io").is_some());
+        assert!(!intersect_listener_route_hostname("*.wildcard.io", "wildcard.io").is_some());
+        assert!(intersect_listener_route_hostname("very.specific.com", "very.specific.com").is_some());
+    }
+
+    #[test]
+    fn hostname_intersection_narrows_wildcard_route_to_exact_listener() {
+        assert_eq!(
+            intersect_listener_route_hostname("very.specific.com", "*.specific.com"),
+            Some("very.specific.com".into())
+        );
+        assert_eq!(intersect_listener_route_hostname("very.specific.com", "foo.specific.com"), None);
+    }
+
+    #[test]
+    fn hostname_intersection_multi_prefix_under_listener_wildcard() {
+        assert_eq!(
+            intersect_listener_route_hostname("*.bar.com", "multiple.prefixes.bar.com"),
+            Some("multiple.prefixes.bar.com".into())
+        );
+        assert_eq!(
+            intersect_listener_route_hostname("*.foo.com", "multiple.prefixes.foo.com"),
+            Some("multiple.prefixes.foo.com".into())
+        );
     }
 
     #[test]

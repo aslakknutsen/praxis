@@ -124,7 +124,8 @@ fn host_matches(pattern: &str, wildcard_suffix: Option<&str>, host: &str) -> boo
             return false;
         }
         let subdomain = &host[..host.len() - suffix.len()];
-        !subdomain.is_empty() && !subdomain.contains('.')
+        // Gateway API: `*.example.com` matches `foo.example.com` and `foo.bar.example.com`.
+        !subdomain.is_empty()
     } else {
         host.eq_ignore_ascii_case(pattern)
     }
