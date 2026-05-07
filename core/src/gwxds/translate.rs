@@ -234,6 +234,18 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
             continue;
         };
 
+        if !gw_route.backends.is_empty()
+            && !invalid_backend_ref
+            && redirect_cfg.is_none()
+            && gw_route.backends.iter().all(|b| b.weight == 0)
+        {
+            warn!(
+                route = %gw_route.key,
+                "all backends have weight 0; skipping route"
+            );
+            continue;
+        }
+
         let cluster_name = if redirect_cfg.is_some() && gw_route.backends.is_empty() {
             "__redirect__".to_owned()
         } else if invalid_backend_ref {
@@ -248,9 +260,10 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
             let endpoints: Vec<Endpoint> = gw_route
                 .backends
                 .iter()
+                .filter(|b| b.weight > 0)
                 .flat_map(|b| {
                     let addr = format!("{}:{}", b.host, backend_socket_port(b));
-                    let weight = b.weight.max(1) as usize;
+                    let weight = b.weight as usize;
                     std::iter::repeat_with(move || Endpoint::Simple(addr.clone())).take(weight)
                 })
                 .collect();
@@ -529,7 +542,12 @@ fn build_lb_entry(gw_routes: &[GwRoute]) -> FilterEntry {
         }
         seen.insert(cluster_name.clone(), ());
 
-        let endpoints: Vec<YamlValue> = gw_route.backends.iter().map(lb_endpoint_yaml).collect();
+        let endpoints: Vec<YamlValue> = gw_route
+            .backends
+            .iter()
+            .filter(|b| b.weight > 0)
+            .map(lb_endpoint_yaml)
+            .collect();
 
         let mut cluster_map = serde_yaml::Mapping::new();
         cluster_map.insert(k("name"), YamlValue::String(cluster_name));
@@ -622,7 +640,8 @@ fn k(s: &str) -> YamlValue {
 /// or `{ address, weight }`.
 fn lb_endpoint_yaml(b: &Backend) -> YamlValue {
     let address = format!("{}:{}", b.host, backend_socket_port(b));
-    let weight = b.weight.max(1);
+    let weight = b.weight;
+    debug_assert!(weight > 0, "lb_endpoint_yaml expects callers to filter weight > 0");
     if weight == 1 {
         YamlValue::String(address)
     } else {
@@ -696,6 +715,63 @@ mod lb_yaml_tests {
         assert_eq!(c.endpoints[0].weight(), 70);
         assert_eq!(c.endpoints[1].address(), "b.ns.svc.cluster.local:80");
         assert_eq!(c.endpoints[1].weight(), 30);
+    }
+
+    #[test]
+    fn lb_entry_omits_zero_weight_backends() {
+        let resource = Resource {
+            key: "ns/gw/http".into(),
+            listener: Some(super::super::proto::Listener {
+                key: "ns/gw/http".into(),
+                hostname: "".into(),
+                port: 80,
+                protocol: 1,
+                tls: None,
+                allowed_routes: vec![],
+            }),
+            routes: vec![GwRoute {
+                key: "ns/route/rule".into(),
+                listener_key: "ns/gw/http".into(),
+                hostnames: vec![],
+                matches: vec![],
+                request_redirect: None,
+                request_header_modifier: None,
+                invalid_backend_ref: false,
+                backends: vec![
+                    Backend {
+                        host: "a.ns.svc.cluster.local".into(),
+                        port: 80,
+                        dial_port: 0,
+                        weight: 70,
+                        inference_pool: None,
+                        tls: None,
+                    },
+                    Backend {
+                        host: "b.ns.svc.cluster.local".into(),
+                        port: 80,
+                        dial_port: 0,
+                        weight: 30,
+                        inference_pool: None,
+                        tls: None,
+                    },
+                    Backend {
+                        host: "c.ns.svc.cluster.local".into(),
+                        port: 80,
+                        dial_port: 0,
+                        weight: 0,
+                        inference_pool: None,
+                        tls: None,
+                    },
+                ],
+            }],
+        };
+
+        let entry = build_lb_entry(&resource.routes);
+        let parsed: LoadBalancerYaml =
+            serde_yaml::from_value(entry.config.clone()).expect("load_balancer filter config should deserialize");
+
+        assert_eq!(parsed.clusters.len(), 1);
+        assert_eq!(parsed.clusters[0].endpoints.len(), 2);
     }
 
     #[test]

@@ -115,7 +115,8 @@ message Backend {
   string host = 1;
   // Backend service port.
   uint32 port = 2;
-  // Traffic weight for weighted routing. 0 is treated as 1.
+  // Traffic weight for weighted routing. 0 means no traffic; omit on the wire
+  // only when the control plane applies Gateway API’s default (1 for unspecified ref weight).
   uint32 weight = 3;
   // Set when this backend is an InferencePool.
   InferencePool inference_pool = 4;
