@@ -305,11 +305,7 @@ fn build_lb_entry(resource: &Resource) -> FilterEntry {
         }
         seen.insert(cluster_name.clone(), ());
 
-        let endpoints: Vec<YamlValue> = gw_route
-            .backends
-            .iter()
-            .map(|b| YamlValue::String(format!("{}:{}", b.host, b.port)))
-            .collect();
+        let endpoints: Vec<YamlValue> = gw_route.backends.iter().map(lb_endpoint_yaml).collect();
 
         let mut cluster_map = serde_yaml::Mapping::new();
         cluster_map.insert(k("name"), YamlValue::String(cluster_name));
@@ -394,4 +390,82 @@ where
 
 fn k(s: &str) -> YamlValue {
     YamlValue::String(s.to_owned())
+}
+
+/// YAML for one load_balancer cluster endpoint, preserving Gateway backend weights.
+///
+/// Matches [`Endpoint`](crate::config::Endpoint) untagged serde: plain string (implicit weight 1)
+/// or `{ address, weight }`.
+fn lb_endpoint_yaml(b: &Backend) -> YamlValue {
+    let address = format!("{}:{}", b.host, b.port);
+    let weight = b.weight.max(1);
+    if weight == 1 {
+        YamlValue::String(address)
+    } else {
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(k("address"), YamlValue::String(address));
+        m.insert(k("weight"), YamlValue::Number(weight.into()));
+        YamlValue::Mapping(m)
+    }
+}
+
+#[cfg(test)]
+mod lb_yaml_tests {
+    use serde::Deserialize;
+
+    use super::*;
+
+    #[derive(Deserialize)]
+    struct LoadBalancerYaml {
+        clusters: Vec<Cluster>,
+    }
+
+    #[test]
+    fn lb_entry_preserves_multi_backend_weights() {
+        let resource = Resource {
+            key: "ns/gw/http".into(),
+            listener: Some(super::super::proto::Listener {
+                key: "ns/gw/http".into(),
+                hostname: "".into(),
+                port: 80,
+                protocol: 1,
+                tls: None,
+                allowed_routes: vec![],
+            }),
+            routes: vec![GwRoute {
+                key: "ns/route/rule".into(),
+                listener_key: "ns/gw/http".into(),
+                hostnames: vec![],
+                matches: vec![],
+                backends: vec![
+                    Backend {
+                        host: "a.ns.svc.cluster.local".into(),
+                        port: 80,
+                        weight: 70,
+                        inference_pool: None,
+                        tls: None,
+                    },
+                    Backend {
+                        host: "b.ns.svc.cluster.local".into(),
+                        port: 80,
+                        weight: 30,
+                        inference_pool: None,
+                        tls: None,
+                    },
+                ],
+            }],
+        };
+
+        let entry = build_lb_entry(&resource);
+        let parsed: LoadBalancerYaml =
+            serde_yaml::from_value(entry.config.clone()).expect("load_balancer filter config should deserialize");
+
+        assert_eq!(parsed.clusters.len(), 1);
+        let c = &parsed.clusters[0];
+        assert_eq!(c.endpoints.len(), 2);
+        assert_eq!(c.endpoints[0].address(), "a.ns.svc.cluster.local:80");
+        assert_eq!(c.endpoints[0].weight(), 70);
+        assert_eq!(c.endpoints[1].address(), "b.ns.svc.cluster.local:80");
+        assert_eq!(c.endpoints[1].weight(), 30);
+    }
 }
