@@ -77,6 +77,10 @@ pub struct Route {
     #[serde(default)]
     pub request_header_modifier: Option<RequestHeaderModifier>,
 
+    /// When true, backend refs did not resolve — reject with HTTP 500 (Gateway conformance).
+    #[serde(default)]
+    pub invalid_backend_ref: bool,
+
     /// Name of the cluster to route matched requests to.
     pub cluster: Arc<str>,
 }

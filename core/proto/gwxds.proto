@@ -175,6 +175,8 @@ message Route {
   RequestRedirect request_redirect = 6;
   // Per-route request header changes (Gateway RequestHeaderModifier). Applied after match.
   RequestHeaderModifier request_header_modifier = 7;
+  // When true, the rule matched but backend refs did not resolve — respond with HTTP 500.
+  bool invalid_backend_ref = 8;
 }
 
 // Resource is the top-level xDS resource served to a gwxds-capable proxy.

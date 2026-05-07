@@ -156,6 +156,7 @@ impl RouterFilter {
     ///         headers: None,
     ///         redirect: None,
     ///         request_header_modifier: None,
+    ///         invalid_backend_ref: false,
     ///         cluster: "default".into(),
     ///     },
     ///     Route {
@@ -167,6 +168,7 @@ impl RouterFilter {
     ///         headers: None,
     ///         redirect: None,
     ///         request_header_modifier: None,
+    ///         invalid_backend_ref: false,
     ///         cluster: "api".into(),
     ///     },
     /// ])
@@ -252,6 +254,9 @@ impl HttpFilter for RouterFilter {
 
         trace!(path = %path, host = host.unwrap_or(""), method = %method, "matching route");
         if let Some(route) = self.match_route(path, host, &ctx.request.headers, Some(method)) {
+            if route.invalid_backend_ref {
+                return Ok(FilterAction::Reject(Rejection::status(500)));
+            }
             if let Some(redir) = &route.redirect {
                 let uri = &ctx.request.uri;
                 let location = expand_redirect_location(&redir.location, uri.path(), uri.query());

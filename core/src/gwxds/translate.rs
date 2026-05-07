@@ -206,7 +206,9 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
             .as_ref()
             .and_then(proto_http_request_header_modifier);
 
-        if gw_route.backends.is_empty() && redirect_cfg.is_none() {
+        let invalid_backend_ref = gw_route.invalid_backend_ref;
+
+        if gw_route.backends.is_empty() && redirect_cfg.is_none() && !invalid_backend_ref {
             continue;
         }
 
@@ -225,6 +227,8 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
 
         let cluster_name = if redirect_cfg.is_some() && gw_route.backends.is_empty() {
             "__redirect__".to_owned()
+        } else if invalid_backend_ref {
+            "__invalid_backend__".to_owned()
         } else if gw_route.backends.len() == 1 {
             backend_cluster_name(&gw_route.backends[0])
         } else {
@@ -270,6 +274,7 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
                     headers: None,
                     redirect: redirect_cfg.clone(),
                     request_header_modifier: hdr_modifier.clone(),
+                    invalid_backend_ref,
                     cluster: Arc::from(cluster_name.as_str()),
                 })
                 .collect()
@@ -284,6 +289,7 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
                         &hostnames,
                         redirect_cfg.clone(),
                         hdr_modifier.clone(),
+                        invalid_backend_ref,
                     )
                 })
                 .collect()
@@ -407,6 +413,7 @@ fn expand_route_match(
     hostnames: &[Option<String>],
     redirect: Option<RedirectAction>,
     request_header_modifier: Option<RequestHeaderModifier>,
+    invalid_backend_ref: bool,
 ) -> Vec<Route> {
     let (path_prefix, path_exact, path_regex) = resolve_path_match(m);
     let headers = if m.headers.is_empty() { None } else { Some(m.headers.clone()) };
@@ -423,6 +430,7 @@ fn expand_route_match(
             headers: headers.clone(),
             redirect: redirect.clone(),
             request_header_modifier: request_header_modifier.clone(),
+            invalid_backend_ref,
             cluster: Arc::from(cluster_name),
         })
         .collect()
@@ -646,6 +654,7 @@ mod lb_yaml_tests {
                 matches: vec![],
                 request_redirect: None,
                 request_header_modifier: None,
+                invalid_backend_ref: false,
                 backends: vec![
                     Backend {
                         host: "a.ns.svc.cluster.local".into(),
@@ -717,6 +726,7 @@ mod merge_tests {
                 matches: vec![],
                 request_redirect: None,
                 request_header_modifier: None,
+                invalid_backend_ref: false,
                 backends: vec![backend.clone()],
             }],
         };
@@ -738,6 +748,7 @@ mod merge_tests {
                 matches: vec![],
                 request_redirect: None,
                 request_header_modifier: None,
+                invalid_backend_ref: false,
                 backends: vec![backend],
             }],
         };
@@ -759,5 +770,41 @@ mod merge_tests {
             .expect("routes")
             .len();
         assert_eq!(n, 2, "expected one route row per merged listener hostname");
+    }
+
+    #[test]
+    fn invalid_backend_ref_emits_router_row_without_cluster() {
+        let resource = Resource {
+            key: "ns/gw/http".into(),
+            listener: Some(GwListener {
+                key: "ns/gw/http".into(),
+                hostname: "".into(),
+                port: 80,
+                protocol: Protocol::Http as i32,
+                tls: None,
+                allowed_routes: vec![],
+            }),
+            routes: vec![GwRoute {
+                key: "ns/route/bad".into(),
+                listener_key: "ns/gw/http".into(),
+                hostnames: vec![],
+                matches: vec![],
+                request_redirect: None,
+                request_header_modifier: None,
+                invalid_backend_ref: true,
+                backends: vec![],
+            }],
+        };
+
+        let cfg = translate(&[resource]);
+        assert!(cfg.clusters.is_empty(), "invalid backend route should not create clusters");
+
+        let router = cfg.filter_chains[0]
+            .filters
+            .iter()
+            .find(|f| f.filter_type == "router")
+            .expect("router filter");
+        let row = &router.config["routes"].as_sequence().expect("routes seq")[0];
+        assert_eq!(row.get("invalid_backend_ref").and_then(|v| v.as_bool()), Some(true));
     }
 }
