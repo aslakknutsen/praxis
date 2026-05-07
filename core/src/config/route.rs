@@ -69,8 +69,23 @@ pub struct Route {
     #[serde(default)]
     pub headers: Option<HashMap<String, String>>,
 
+    /// When set, respond with this redirect instead of forwarding to [`cluster`].
+    #[serde(default)]
+    pub redirect: Option<RedirectAction>,
+
     /// Name of the cluster to route matched requests to.
     pub cluster: Arc<str>,
+}
+
+/// Gateway API RequestRedirect rendered as status + Location template (`${path}`, `${query}`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RedirectAction {
+    /// HTTP redirect status (301, 302, 307, or 308).
+    pub status: u16,
+
+    /// `Location` header template (same placeholders as the `redirect` filter).
+    pub location: String,
 }
 
 // -----------------------------------------------------------------------------

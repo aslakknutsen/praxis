@@ -29,6 +29,7 @@ use self::{
     config::RouterConfig,
     matching::{path_specificity, route_matches_request, should_stop_early, update_best_match},
 };
+use super::redirect::expand_redirect_location;
 use crate::{
     FilterError,
     actions::{FilterAction, Rejection},
@@ -109,6 +110,7 @@ impl RouterFilter {
     ///         methods: None,
     ///         host: None,
     ///         headers: None,
+    ///         redirect: None,
     ///         cluster: "default".into(),
     ///     },
     ///     Route {
@@ -118,6 +120,7 @@ impl RouterFilter {
     ///         methods: None,
     ///         host: None,
     ///         headers: None,
+    ///         redirect: None,
     ///         cluster: "api".into(),
     ///     },
     /// ])
@@ -198,6 +201,12 @@ impl HttpFilter for RouterFilter {
 
         trace!(path = %path, host = host.unwrap_or(""), method = %method, "matching route");
         if let Some(route) = self.match_route(path, host, &ctx.request.headers, Some(method)) {
+            if let Some(redir) = &route.redirect {
+                let uri = &ctx.request.uri;
+                let location = expand_redirect_location(&redir.location, uri.path(), uri.query());
+                let rejection = Rejection::status(redir.status).with_header("Location", &location);
+                return Ok(FilterAction::Reject(rejection));
+            }
             debug!(
                 path = %path,
                 cluster = %route.cluster,

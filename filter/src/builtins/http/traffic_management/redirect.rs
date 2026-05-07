@@ -134,7 +134,7 @@ impl HttpFilter for RedirectFilter {
 
     async fn on_request(&self, ctx: &mut HttpFilterContext<'_>) -> Result<FilterAction, FilterError> {
         let uri = &ctx.request.uri;
-        let location = expand_location(&self.location, uri.path(), uri.query());
+        let location = expand_redirect_location(&self.location, uri.path(), uri.query());
         let rejection = Rejection::status(self.status).with_header("Location", &location);
         Ok(FilterAction::Reject(rejection))
     }
@@ -148,7 +148,7 @@ impl HttpFilter for RedirectFilter {
 ///
 /// `${query}` includes the `?` prefix when a query string is present,
 /// and expands to an empty string when absent.
-fn expand_location(template: &str, path: &str, query: Option<&str>) -> String {
+pub(crate) fn expand_redirect_location(template: &str, path: &str, query: Option<&str>) -> String {
     let result = template.replace("${path}", path);
     let query_with_prefix = query.map_or(String::new(), |q| format!("?{q}"));
     result.replace("${query}", &query_with_prefix)
@@ -225,13 +225,13 @@ mod tests {
 
     #[test]
     fn expand_location_substitutes_path() {
-        let result = expand_location("https://example.com${path}", "/api/users", None);
+        let result = expand_redirect_location("https://example.com${path}", "/api/users", None);
         assert_eq!(result, "https://example.com/api/users", "path should be substituted");
     }
 
     #[test]
     fn expand_location_substitutes_query_with_prefix() {
-        let result = expand_location("https://example.com${path}${query}", "/search", Some("q=rust"));
+        let result = expand_redirect_location("https://example.com${path}${query}", "/search", Some("q=rust"));
         assert_eq!(
             result, "https://example.com/search?q=rust",
             "query should include leading ? and value"
@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn expand_location_absent_query_expands_to_nothing() {
-        let result = expand_location("https://example.com${path}${query}", "/page", None);
+        let result = expand_redirect_location("https://example.com${path}${query}", "/page", None);
         assert_eq!(
             result, "https://example.com/page",
             "missing query should expand to empty string with no trailing ?"
@@ -249,25 +249,25 @@ mod tests {
 
     #[test]
     fn expand_location_no_placeholders() {
-        let result = expand_location("https://other.com/fixed", "/ignored", Some("ignored=true"));
+        let result = expand_redirect_location("https://other.com/fixed", "/ignored", Some("ignored=true"));
         assert_eq!(result, "https://other.com/fixed", "no placeholders should pass through");
     }
 
     #[test]
     fn expand_location_root_path() {
-        let result = expand_location("https://example.com${path}", "/", None);
+        let result = expand_redirect_location("https://example.com${path}", "/", None);
         assert_eq!(result, "https://example.com/", "root path should expand to /");
     }
 
     #[test]
     fn expand_location_empty_path() {
-        let result = expand_location("https://example.com${path}", "", None);
+        let result = expand_redirect_location("https://example.com${path}", "", None);
         assert_eq!(result, "https://example.com", "empty path should expand to nothing");
     }
 
     #[test]
     fn expand_location_query_with_special_characters() {
-        let result = expand_location(
+        let result = expand_redirect_location(
             "https://example.com${path}${query}",
             "/search",
             Some("q=hello+world&page=1&filter=%E2%9C%93"),
@@ -433,7 +433,7 @@ mod tests {
 
     #[test]
     fn expand_location_preserves_percent_encoded_path() {
-        let result = expand_location("https://example.com${path}${query}", "/path%20with%20spaces", None);
+        let result = expand_redirect_location("https://example.com${path}${query}", "/path%20with%20spaces", None);
         assert_eq!(
             result, "https://example.com/path%20with%20spaces",
             "percent-encoded spaces should be preserved verbatim"
@@ -442,7 +442,7 @@ mod tests {
 
     #[test]
     fn expand_location_preserves_utf8_encoded_path() {
-        let result = expand_location("https://example.com${path}${query}", "/caf%C3%A9", None);
+        let result = expand_redirect_location("https://example.com${path}${query}", "/caf%C3%A9", None);
         assert_eq!(
             result, "https://example.com/caf%C3%A9",
             "percent-encoded UTF-8 characters should be preserved"
@@ -453,7 +453,7 @@ mod tests {
     fn expand_location_very_long_path() {
         let long_segment = "a".repeat(10_000);
         let path = format!("/{long_segment}");
-        let result = expand_location("https://example.com${path}", &path, None);
+        let result = expand_redirect_location("https://example.com${path}", &path, None);
         assert_eq!(
             result.len(),
             "https://example.com/".len() + 10_000,
@@ -466,7 +466,7 @@ mod tests {
     fn expand_location_very_long_query() {
         let long_value = "x".repeat(10_000);
         let query = format!("key={long_value}");
-        let result = expand_location("https://example.com${path}${query}", "/p", Some(&query));
+        let result = expand_redirect_location("https://example.com${path}${query}", "/p", Some(&query));
         assert_eq!(
             result.len(),
             "https://example.com/p?key=".len() + 10_000,

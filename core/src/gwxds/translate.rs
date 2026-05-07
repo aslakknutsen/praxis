@@ -34,10 +34,13 @@ use tracing::warn;
 
 use crate::config::{
     AdminConfig, BodyLimitsConfig, Cluster, Config, Endpoint, FailureMode, FilterChainConfig,
-    FilterEntry, InsecureOptions, Listener, ProtocolKind, Route, RuntimeConfig,
+    FilterEntry, InsecureOptions, Listener, ProtocolKind, RedirectAction, Route, RuntimeConfig,
 };
 
-use super::proto::{Backend, BackendTls, Listener as GwListener, Protocol, Resource, Route as GwRoute, TlsConfig};
+use super::proto::{
+    Backend, BackendTls, Listener as GwListener, Protocol, RequestRedirect as ProtoRequestRedirect, Resource,
+    Route as GwRoute, TlsConfig,
+};
 
 /// Groups listeners that share the same bind parameters so their routes are merged into one router.
 #[derive(Clone, Copy, Eq, PartialEq, Hash, Ord, PartialOrd)]
@@ -196,12 +199,14 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
     let mut seen_clusters: HashMap<String, ()> = HashMap::new();
 
     for gw_route in &resource.routes {
-        if gw_route.backends.is_empty() {
+        let redirect_cfg = gw_route.request_redirect.as_ref().and_then(proto_redirect_to_action);
+
+        if gw_route.backends.is_empty() && redirect_cfg.is_none() {
             continue;
         }
 
         // InferencePool backends require EPP support that is not yet implemented.
-        if gw_route.backends.iter().any(|b| b.inference_pool.is_some()) {
+        if !gw_route.backends.is_empty() && gw_route.backends.iter().any(|b| b.inference_pool.is_some()) {
             warn!(
                 route = %gw_route.key,
                 "route has InferencePool backends which are not yet supported; skipping route"
@@ -213,13 +218,15 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
             continue;
         };
 
-        let cluster_name = if gw_route.backends.len() == 1 {
+        let cluster_name = if redirect_cfg.is_some() && gw_route.backends.is_empty() {
+            "__redirect__".to_owned()
+        } else if gw_route.backends.len() == 1 {
             backend_cluster_name(&gw_route.backends[0])
         } else {
             format!("{}-backends", gw_route.key)
         };
 
-        if !seen_clusters.contains_key(&cluster_name) {
+        if !gw_route.backends.is_empty() && !seen_clusters.contains_key(&cluster_name) {
             let endpoints: Vec<Endpoint> = gw_route
                 .backends
                 .iter()
@@ -256,6 +263,7 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
                     methods: None,
                     host: host.clone(),
                     headers: None,
+                    redirect: redirect_cfg.clone(),
                     cluster: Arc::from(cluster_name.as_str()),
                 })
                 .collect()
@@ -263,7 +271,7 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
             gw_route
                 .matches
                 .iter()
-                .flat_map(|m| expand_route_match(m, &cluster_name, &hostnames))
+                .flat_map(|m| expand_route_match(m, &cluster_name, &hostnames, redirect_cfg.clone()))
                 .collect()
         };
 
@@ -271,6 +279,25 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
     }
 
     (routes, clusters)
+}
+
+fn proto_redirect_to_action(r: &ProtoRequestRedirect) -> Option<RedirectAction> {
+    if r.hostname.is_empty() {
+        return None;
+    }
+    let scheme = if r.scheme.is_empty() { "http" } else { r.scheme.as_str() };
+    let mut location = format!("{scheme}://{}", r.hostname);
+    if r.port != 0 {
+        location.push(':');
+        location.push_str(&r.port.to_string());
+    }
+    location.push_str("${path}${query}");
+    let status = if r.status_code == 0 {
+        302
+    } else {
+        u16::try_from(r.status_code).ok()?
+    };
+    Some(RedirectAction { status, location })
 }
 
 /// Effective virtual-host hostnames for this route on its Gateway listener (Gateway API intersection).
@@ -339,6 +366,7 @@ fn expand_route_match(
     m: &super::proto::RouteMatch,
     cluster_name: &str,
     hostnames: &[Option<String>],
+    redirect: Option<RedirectAction>,
 ) -> Vec<Route> {
     let (path_prefix, path_exact, path_regex) = resolve_path_match(m);
     let headers = if m.headers.is_empty() { None } else { Some(m.headers.clone()) };
@@ -353,6 +381,7 @@ fn expand_route_match(
             methods: methods.clone(),
             host: host.clone(),
             headers: headers.clone(),
+            redirect: redirect.clone(),
             cluster: Arc::from(cluster_name),
         })
         .collect()
@@ -574,6 +603,7 @@ mod lb_yaml_tests {
                 listener_key: "ns/gw/http".into(),
                 hostnames: vec![],
                 matches: vec![],
+                request_redirect: None,
                 backends: vec![
                     Backend {
                         host: "a.ns.svc.cluster.local".into(),
@@ -643,6 +673,7 @@ mod merge_tests {
                 listener_key: "ns/gw/l1".into(),
                 hostnames: vec![],
                 matches: vec![],
+                request_redirect: None,
                 backends: vec![backend.clone()],
             }],
         };
@@ -662,6 +693,7 @@ mod merge_tests {
                 listener_key: "ns/gw/l2".into(),
                 hostnames: vec![],
                 matches: vec![],
+                request_redirect: None,
                 backends: vec![backend],
             }],
         };

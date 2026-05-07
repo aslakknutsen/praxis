@@ -123,6 +123,15 @@ message Backend {
   BackendTLS tls = 5;
 }
 
+// RequestRedirect mirrors Gateway API HTTPRequestRedirect for redirect-only rules.
+message RequestRedirect {
+  string hostname = 1;
+  string path = 2;
+  uint32 port = 3;
+  string scheme = 4;
+  uint32 status_code = 5;
+}
+
 // RouteMatch describes matching criteria for a single route rule.
 message RouteMatch {
   // HTTP path prefix match. Empty means match all paths.
@@ -149,6 +158,8 @@ message Route {
   repeated RouteMatch matches = 4;
   // Upstream targets for matched requests.
   repeated Backend backends = 5;
+  // When set, matched requests are redirected (Gateway RequestRedirect filter).
+  RequestRedirect request_redirect = 6;
 }
 
 // Resource is the top-level xDS resource served to a gwxds-capable proxy.
