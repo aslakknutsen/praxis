@@ -121,6 +121,8 @@ message Backend {
   InferencePool inference_pool = 4;
   // Set when a BackendTLSPolicy applies to this backend.
   BackendTLS tls = 5;
+  // Pod/target port to open upstream connections to when it differs from port (Kubernetes targetPort).
+  uint32 dial_port = 6;
 }
 
 // RequestRedirect mirrors Gateway API HTTPRequestRedirect for redirect-only rules.

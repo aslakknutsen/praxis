@@ -43,6 +43,15 @@ use super::proto::{
     RequestHeaderModifier as ProtoRequestHeaderModifier, Resource, Route as GwRoute, TlsConfig,
 };
 
+#[inline]
+fn backend_socket_port(b: &Backend) -> u32 {
+    if b.dial_port != 0 {
+        b.dial_port
+    } else {
+        b.port
+    }
+}
+
 /// Groups listeners that share the same bind parameters so their routes are merged into one router.
 #[derive(Clone, Copy, Eq, PartialEq, Hash, Ord, PartialOrd)]
 struct MergeKey {
@@ -240,7 +249,7 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
                 .backends
                 .iter()
                 .flat_map(|b| {
-                    let addr = format!("{}:{}", b.host, b.port);
+                    let addr = format!("{}:{}", b.host, backend_socket_port(b));
                     let weight = b.weight.max(1) as usize;
                     std::iter::repeat_with(move || Endpoint::Simple(addr.clone())).take(weight)
                 })
@@ -612,7 +621,7 @@ fn k(s: &str) -> YamlValue {
 /// Matches [`Endpoint`](crate::config::Endpoint) untagged serde: plain string (implicit weight 1)
 /// or `{ address, weight }`.
 fn lb_endpoint_yaml(b: &Backend) -> YamlValue {
-    let address = format!("{}:{}", b.host, b.port);
+    let address = format!("{}:{}", b.host, backend_socket_port(b));
     let weight = b.weight.max(1);
     if weight == 1 {
         YamlValue::String(address)
@@ -659,6 +668,7 @@ mod lb_yaml_tests {
                     Backend {
                         host: "a.ns.svc.cluster.local".into(),
                         port: 80,
+                        dial_port: 0,
                         weight: 70,
                         inference_pool: None,
                         tls: None,
@@ -666,6 +676,7 @@ mod lb_yaml_tests {
                     Backend {
                         host: "b.ns.svc.cluster.local".into(),
                         port: 80,
+                        dial_port: 0,
                         weight: 30,
                         inference_pool: None,
                         tls: None,
@@ -686,6 +697,48 @@ mod lb_yaml_tests {
         assert_eq!(c.endpoints[1].address(), "b.ns.svc.cluster.local:80");
         assert_eq!(c.endpoints[1].weight(), 30);
     }
+
+    #[test]
+    fn lb_entry_uses_dial_port_in_addresses() {
+        let resource = Resource {
+            key: "ns/gw/http".into(),
+            listener: Some(super::super::proto::Listener {
+                key: "ns/gw/http".into(),
+                hostname: "".into(),
+                port: 80,
+                protocol: 1,
+                tls: None,
+                allowed_routes: vec![],
+            }),
+            routes: vec![GwRoute {
+                key: "ns/route/rule".into(),
+                listener_key: "ns/gw/http".into(),
+                hostnames: vec![],
+                matches: vec![],
+                request_redirect: None,
+                request_header_modifier: None,
+                invalid_backend_ref: false,
+                backends: vec![Backend {
+                    host: "svc.ns.svc.cluster.local".into(),
+                    port: 8080,
+                    dial_port: 3000,
+                    weight: 1,
+                    inference_pool: None,
+                    tls: None,
+                }],
+            }],
+        };
+
+        let entry = build_lb_entry(&resource.routes);
+        let parsed: LoadBalancerYaml =
+            serde_yaml::from_value(entry.config.clone()).expect("load_balancer filter config should deserialize");
+
+        assert_eq!(parsed.clusters.len(), 1);
+        assert_eq!(
+            parsed.clusters[0].endpoints[0].address(),
+            "svc.ns.svc.cluster.local:3000"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -704,6 +757,7 @@ mod merge_tests {
         let backend = Backend {
             host: "svc.ns.svc.cluster.local".into(),
             port: 80,
+            dial_port: 0,
             weight: 1,
             inference_pool: None,
             tls: None,
