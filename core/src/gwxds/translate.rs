@@ -163,6 +163,15 @@ pub fn translate(resources: &[Resource]) -> Config {
 
         let listener = build_listener(gw_listener, &chain_name, Some(&merge_label));
 
+        let is_tls_passthrough = gw_listener.protocol() == Protocol::Tls;
+
+        if is_tls_passthrough {
+            let filter_chain = build_sni_filter_chain(chain_name, &group);
+            listeners.push(listener);
+            filter_chains.push(filter_chain);
+            continue;
+        }
+
         let mut routes: Vec<Route> = Vec::new();
         let mut resource_clusters: Vec<Cluster> = Vec::new();
 
@@ -625,6 +634,87 @@ fn build_filter_chain(name: String, routes: Vec<Route>, gw_routes: &[GwRoute]) -
     let router_entry = build_router_entry(routes);
     let lb_entry = build_lb_entry(gw_routes);
     FilterChainConfig { name, filters: vec![router_entry, lb_entry] }
+}
+
+/// Build an `sni_router` filter chain for TLS passthrough listeners.
+///
+/// Each TLSRoute maps to an SNI route entry where `server_names` are the route
+/// hostnames (intersected with the listener hostname) and `upstream` is the
+/// backend address. The proxy forwards raw TLS bytes without termination.
+///
+/// When a route has no specific hostnames (match-any), it becomes the
+/// `default_upstream` for the sni_router (handles connections whose SNI
+/// doesn't match any explicit route).
+fn build_sni_filter_chain(name: String, group: &[&Resource]) -> FilterChainConfig {
+    let mut sni_routes: Vec<YamlValue> = Vec::new();
+    let mut default_upstream: Option<String> = None;
+    let mut seen_names: HashMap<String, ()> = HashMap::new();
+
+    for resource in group {
+        let Some(listener) = resource.listener.as_ref() else { continue };
+        for gw_route in &resource.routes {
+            if gw_route.backends.is_empty() {
+                continue;
+            }
+
+            let Some(hostnames) = effective_route_hostnames(listener, gw_route) else {
+                continue;
+            };
+
+            let first_backend = &gw_route.backends[0];
+            let upstream = format!(
+                "{}:{}",
+                backend_upstream_host(first_backend, &gw_route.key),
+                backend_socket_port(first_backend)
+            );
+
+            let new_names: Vec<String> = hostnames
+                .into_iter()
+                .flatten()
+                .filter(|h| !seen_names.contains_key(h))
+                .collect();
+            for n in &new_names {
+                seen_names.insert(n.clone(), ());
+            }
+            let server_names: Vec<YamlValue> = new_names
+                .into_iter()
+                .map(YamlValue::String)
+                .collect();
+
+            if server_names.is_empty() {
+                if default_upstream.is_none() {
+                    default_upstream = Some(upstream);
+                }
+                continue;
+            }
+
+            let mut entry = serde_yaml::Mapping::new();
+            entry.insert(k("server_names"), YamlValue::Sequence(server_names));
+            entry.insert(k("upstream"), YamlValue::String(upstream));
+            sni_routes.push(YamlValue::Mapping(entry));
+        }
+    }
+
+    let mut config_map: Vec<(&str, YamlValue)> = Vec::new();
+    if !sni_routes.is_empty() {
+        config_map.push(("routes", YamlValue::Sequence(sni_routes)));
+    }
+    if let Some(default) = default_upstream {
+        config_map.push(("default_upstream", YamlValue::String(default)));
+    }
+
+    FilterChainConfig {
+        name,
+        filters: vec![FilterEntry {
+            filter_type: "sni_router".to_owned(),
+            config: yaml_map(config_map),
+            branch_chains: None,
+            conditions: Vec::new(),
+            response_conditions: Vec::new(),
+            failure_mode: FailureMode::Closed,
+            name: None,
+        }],
+    }
 }
 
 fn build_router_entry(routes: Vec<Route>) -> FilterEntry {
@@ -1278,5 +1368,235 @@ mod merge_tests {
         assert!(row.path_exact.is_none());
         assert_eq!(row.methods.as_deref(), Some(&["POST".to_owned()][..]));
         assert!(row.grpc_route);
+    }
+
+    #[test]
+    fn tls_passthrough_produces_sni_router_filter() {
+        let resource = Resource {
+            key: "ns/gw/tls".into(),
+            listener: Some(GwListener {
+                key: "ns/gw/tls".into(),
+                hostname: "*.example.com".into(),
+                port: 443,
+                protocol: Protocol::Tls as i32,
+                tls: None,
+                allowed_routes: vec!["gateway.networking.k8s.io/TLSRoute".into()],
+            }),
+            routes: vec![GwRoute {
+                key: "ns/tls-route/0".into(),
+                listener_key: "ns/gw/tls".into(),
+                hostnames: vec!["svc.example.com".into()],
+                matches: vec![],
+                request_redirect: None,
+                request_header_modifier: None,
+                invalid_backend_ref: false,
+                tls_route: true,
+                backends: vec![Backend {
+                    host: "svc.ns.svc.cluster.local".into(),
+                    port: 8443,
+                    dial_port: 0,
+                    weight: 1,
+                    inference_pool: None,
+                    tls: None,
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let cfg = translate(&[resource]);
+        assert_eq!(cfg.listeners.len(), 1);
+        assert_eq!(cfg.listeners[0].protocol, ProtocolKind::Tcp);
+        assert_eq!(cfg.filter_chains.len(), 1);
+
+        let sni_filter = cfg.filter_chains[0]
+            .filters
+            .iter()
+            .find(|f| f.filter_type == "sni_router")
+            .expect("sni_router filter should be present for TLS passthrough");
+
+        let routes = sni_filter.config["routes"]
+            .as_sequence()
+            .expect("sni_router should have routes");
+        assert_eq!(routes.len(), 1);
+
+        let entry = &routes[0];
+        let names = entry["server_names"].as_sequence().expect("server_names");
+        assert_eq!(names.len(), 1);
+        assert_eq!(names[0].as_str(), Some("svc.example.com"));
+
+        let upstream = entry["upstream"].as_str().expect("upstream");
+        assert_eq!(upstream, "svc.ns.svc.cluster.local:8443");
+
+        assert!(
+            cfg.filter_chains[0].filters.iter().all(|f| f.filter_type != "router"),
+            "TLS passthrough should not have an HTTP router filter"
+        );
+    }
+
+    #[test]
+    fn tls_passthrough_multiple_routes_merged() {
+        let backend1 = Backend {
+            host: "svc1.ns.svc.cluster.local".into(),
+            port: 8443,
+            dial_port: 0,
+            weight: 1,
+            inference_pool: None,
+            tls: None,
+        };
+        let backend2 = Backend {
+            host: "svc2.ns.svc.cluster.local".into(),
+            port: 9443,
+            dial_port: 0,
+            weight: 1,
+            inference_pool: None,
+            tls: None,
+        };
+
+        let r1 = Resource {
+            key: "ns/gw/tls-1".into(),
+            listener: Some(GwListener {
+                key: "ns/gw/tls-1".into(),
+                hostname: "*.example.com".into(),
+                port: 443,
+                protocol: Protocol::Tls as i32,
+                tls: None,
+                allowed_routes: vec![],
+            }),
+            routes: vec![GwRoute {
+                key: "ns/tls-route-a/0".into(),
+                listener_key: "ns/gw/tls-1".into(),
+                hostnames: vec!["a.example.com".into()],
+                tls_route: true,
+                backends: vec![backend1],
+                ..Default::default()
+            }],
+        };
+
+        let r2 = Resource {
+            key: "ns/gw/tls-2".into(),
+            listener: Some(GwListener {
+                key: "ns/gw/tls-2".into(),
+                hostname: "*.example.com".into(),
+                port: 443,
+                protocol: Protocol::Tls as i32,
+                tls: None,
+                allowed_routes: vec![],
+            }),
+            routes: vec![GwRoute {
+                key: "ns/tls-route-b/0".into(),
+                listener_key: "ns/gw/tls-2".into(),
+                hostnames: vec!["b.example.com".into()],
+                tls_route: true,
+                backends: vec![backend2],
+                ..Default::default()
+            }],
+        };
+
+        let cfg = translate(&[r1, r2]);
+        assert_eq!(cfg.listeners.len(), 1, "TLS passthrough listeners on same port should merge");
+        assert_eq!(cfg.filter_chains.len(), 1);
+
+        let sni_filter = cfg.filter_chains[0]
+            .filters
+            .iter()
+            .find(|f| f.filter_type == "sni_router")
+            .expect("sni_router filter");
+        let routes = sni_filter.config["routes"]
+            .as_sequence()
+            .expect("routes");
+        assert_eq!(routes.len(), 2);
+    }
+
+    #[test]
+    fn tls_passthrough_empty_hostname_uses_route_hostnames() {
+        let resource = Resource {
+            key: "ns/gw/tls".into(),
+            listener: Some(GwListener {
+                key: "ns/gw/tls".into(),
+                hostname: "".into(),
+                port: 443,
+                protocol: Protocol::Tls as i32,
+                tls: None,
+                allowed_routes: vec![],
+            }),
+            routes: vec![GwRoute {
+                key: "ns/tls-route/0".into(),
+                listener_key: "ns/gw/tls".into(),
+                hostnames: vec!["foo.test.com".into(), "bar.test.com".into()],
+                tls_route: true,
+                backends: vec![Backend {
+                    host: "backend.ns.svc.cluster.local".into(),
+                    port: 443,
+                    dial_port: 0,
+                    weight: 1,
+                    inference_pool: None,
+                    tls: None,
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let cfg = translate(&[resource]);
+        let sni_filter = cfg.filter_chains[0]
+            .filters
+            .iter()
+            .find(|f| f.filter_type == "sni_router")
+            .expect("sni_router filter");
+        let routes = sni_filter.config["routes"]
+            .as_sequence()
+            .expect("routes");
+        assert_eq!(routes.len(), 1);
+        let names = routes[0]["server_names"].as_sequence().expect("server_names");
+        assert_eq!(names.len(), 2);
+        assert_eq!(names[0].as_str(), Some("foo.test.com"));
+        assert_eq!(names[1].as_str(), Some("bar.test.com"));
+    }
+
+    #[test]
+    fn tls_passthrough_no_hostnames_becomes_default_upstream() {
+        let resource = Resource {
+            key: "ns/gw/tls".into(),
+            listener: Some(GwListener {
+                key: "ns/gw/tls".into(),
+                hostname: "".into(),
+                port: 443,
+                protocol: Protocol::Tls as i32,
+                tls: None,
+                allowed_routes: vec![],
+            }),
+            routes: vec![GwRoute {
+                key: "ns/tls-route/0".into(),
+                listener_key: "ns/gw/tls".into(),
+                hostnames: vec![],
+                tls_route: true,
+                backends: vec![Backend {
+                    host: "backend.ns.svc.cluster.local".into(),
+                    port: 443,
+                    dial_port: 0,
+                    weight: 1,
+                    inference_pool: None,
+                    tls: None,
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let cfg = translate(&[resource]);
+        let sni_filter = cfg.filter_chains[0]
+            .filters
+            .iter()
+            .find(|f| f.filter_type == "sni_router")
+            .expect("sni_router filter");
+
+        assert!(
+            sni_filter.config.get("routes").is_none()
+                || sni_filter.config["routes"].as_sequence().map_or(true, |r| r.is_empty()),
+            "no explicit routes when both listener and route have no hostname"
+        );
+
+        let default = sni_filter.config["default_upstream"]
+            .as_str()
+            .expect("default_upstream should be set");
+        assert_eq!(default, "backend.ns.svc.cluster.local:443");
     }
 }
