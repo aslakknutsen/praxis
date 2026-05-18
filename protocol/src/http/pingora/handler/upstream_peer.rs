@@ -8,6 +8,7 @@
 use std::{net::ToSocketAddrs, sync::Arc};
 
 use pingora_core::{Result, upstreams::peer::HttpPeer};
+use pingora_proxy::Session;
 use praxis_core::connectivity::Upstream;
 
 use super::super::{context::PingoraRequestCtx, convert::apply_connection_options};
@@ -35,6 +36,20 @@ pub(super) fn execute(ctx: &mut PingoraRequestCtx) -> Result<Box<HttpPeer>> {
     })?;
 
     build_peer(upstream)
+}
+
+/// When the downstream request carries gRPC content-type, enable HTTP/2 (h2c)
+/// for the upstream connection so the gRPC backend receives proper HTTP/2 frames.
+pub(super) fn enable_h2_for_grpc(session: &Session, peer: &mut HttpPeer) {
+    let is_grpc = session
+        .req_header()
+        .headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.starts_with("application/grpc"));
+    if is_grpc {
+        peer.options.set_http_version(2, 2);
+    }
 }
 
 /// Parse the upstream address and build an [`HttpPeer`] with TLS/SNI config.

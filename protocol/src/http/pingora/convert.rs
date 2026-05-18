@@ -3,6 +3,7 @@
 
 //! Conversions between Pingora types and Praxis transport-agnostic types.
 
+use http::header::{HeaderName, HeaderValue};
 use pingora_core::upstreams::peer::HttpPeer;
 use pingora_proxy::Session;
 use praxis_core::connectivity::ConnectionOptions;
@@ -87,6 +88,18 @@ pub(crate) async fn send_rejection(session: &mut Session, rejection: Rejection) 
 
     session.set_keepalive(None);
 
+    let is_grpc = rejection.headers.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("content-type") && value.starts_with("application/grpc")
+    });
+
+    if is_grpc {
+        send_grpc_rejection(session, rejection).await;
+    } else {
+        send_http_rejection(session, rejection).await;
+    }
+}
+
+async fn send_http_rejection(session: &mut Session, rejection: Rejection) {
     let mut header = pingora_http::ResponseHeader::build(rejection.status, Some(rejection.headers.len()))
         .expect("valid rejection status");
 
@@ -105,6 +118,40 @@ pub(crate) async fn send_rejection(session: &mut Session, rejection: Rejection) 
     if let Some(body) = rejection.body {
         let _write = session.write_response_body(Some(body), true).await;
     }
+}
+
+/// gRPC requires `grpc-status` and `grpc-message` as HTTP/2 trailers.
+/// Pingora's `write_response_header` hardcodes `end=false` for H2, so
+/// writing everything as response headers leaves the stream open without
+/// trailers, causing "server closed the stream without sending trailers".
+async fn send_grpc_rejection(session: &mut Session, rejection: Rejection) {
+    let mut initial = Vec::new();
+    let mut trailers = http::HeaderMap::new();
+
+    for (name, value) in &rejection.headers {
+        if name.eq_ignore_ascii_case("grpc-status") || name.eq_ignore_ascii_case("grpc-message") {
+            if let (Ok(hn), Ok(hv)) = (
+                HeaderName::from_bytes(name.as_bytes()),
+                HeaderValue::from_str(value),
+            ) {
+                trailers.insert(hn, hv);
+            }
+        } else {
+            initial.push((name.clone(), value.clone()));
+        }
+    }
+
+    let mut header =
+        pingora_http::ResponseHeader::build(rejection.status, Some(initial.len())).expect("valid rejection status");
+    for (name, value) in &initial {
+        let _insert = header.insert_header(name.clone(), value.clone());
+    }
+
+    let _write = session.write_response_header(Box::new(header), false).await;
+    let _write = session
+        .downstream_session
+        .write_response_trailers(trailers)
+        .await;
 }
 
 // -----------------------------------------------------------------------------

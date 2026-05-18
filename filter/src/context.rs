@@ -6,7 +6,7 @@
 use std::{borrow::Cow, collections::HashMap, net::IpAddr, sync::Arc, time::Instant};
 
 use http::{HeaderMap, Method, StatusCode, Uri};
-use praxis_core::{connectivity::Upstream, health::HealthRegistry};
+use praxis_core::{config::RequestHeaderModifier, connectivity::Upstream, health::HealthRegistry};
 
 use crate::{body::BodyMode, pipeline::body::merge_body_mode, results::FilterResultSet};
 
@@ -111,6 +111,10 @@ pub struct HttpFilterContext<'a> {
     /// for use by passive health checking in the
     /// protocol layer.
     pub selected_endpoint_index: Option<usize>,
+
+    /// Response header modifier set by the router for GRPCRoute ResponseHeaderModifier.
+    /// Applied during the response phase in the protocol handler.
+    pub response_header_modifier: Option<RequestHeaderModifier>,
 
     /// Rewritten URI path for the upstream request.
     ///

@@ -149,27 +149,13 @@ impl RouterFilter {
     /// let router = RouterFilter::new(vec![
     ///     Route {
     ///         path_prefix: "/".into(),
-    ///         path_exact: None,
-    ///         path_regex: None,
-    ///         methods: None,
-    ///         host: None,
-    ///         headers: None,
-    ///         redirect: None,
-    ///         request_header_modifier: None,
-    ///         invalid_backend_ref: false,
     ///         cluster: "default".into(),
+    ///         ..Default::default()
     ///     },
     ///     Route {
     ///         path_prefix: "/api".into(),
-    ///         path_exact: None,
-    ///         path_regex: None,
-    ///         methods: None,
-    ///         host: None,
-    ///         headers: None,
-    ///         redirect: None,
-    ///         request_header_modifier: None,
-    ///         invalid_backend_ref: false,
     ///         cluster: "api".into(),
+    ///         ..Default::default()
     ///     },
     /// ])
     /// .unwrap();
@@ -255,6 +241,9 @@ impl HttpFilter for RouterFilter {
         trace!(path = %path, host = host.unwrap_or(""), method = %method, "matching route");
         if let Some(route) = self.match_route(path, host, &ctx.request.headers, Some(method)) {
             if route.invalid_backend_ref {
+                if route.grpc_route {
+                    return Ok(FilterAction::Reject(grpc_unimplemented()));
+                }
                 return Ok(FilterAction::Reject(Rejection::status(500)));
             }
             if let Some(redir) = &route.redirect {
@@ -272,10 +261,30 @@ impl HttpFilter for RouterFilter {
             if let Some(ref m) = route.request_header_modifier {
                 enqueue_route_request_header_ops(ctx, m);
             }
+            if let Some(ref m) = route.response_header_modifier {
+                ctx.response_header_modifier = Some(m.clone());
+            }
             Ok(FilterAction::Continue)
         } else {
             debug!(path = %path, "no route matched");
+            if is_grpc_request(&ctx.request.headers) {
+                return Ok(FilterAction::Reject(grpc_unimplemented()));
+            }
             Ok(FilterAction::Reject(Rejection::status(404)))
         }
     }
+}
+
+fn is_grpc_request(headers: &HeaderMap) -> bool {
+    headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.starts_with("application/grpc"))
+}
+
+fn grpc_unimplemented() -> Rejection {
+    Rejection::status(200)
+        .with_header("content-type", "application/grpc")
+        .with_header("grpc-status", "12")
+        .with_header("grpc-message", "unimplemented")
 }

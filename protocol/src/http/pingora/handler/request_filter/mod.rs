@@ -208,6 +208,7 @@ async fn run_pipeline(
         rewritten_path,
         request_body_mode,
         selected_endpoint_index,
+        response_header_modifier,
         pending_ops,
     ) = {
         let mut filter_ctx = ctx.build_filter_context(pipeline, &request, None);
@@ -221,6 +222,7 @@ async fn run_pipeline(
             filter_ctx.rewritten_path,
             filter_ctx.request_body_mode,
             filter_ctx.selected_endpoint_index,
+            filter_ctx.response_header_modifier,
             filter_ctx.pending_request_header_ops,
         )
     };
@@ -236,6 +238,7 @@ async fn run_pipeline(
             ctx.rewritten_path = rewritten_path;
             ctx.request_body_mode = request_body_mode;
             ctx.selected_endpoint_index = selected_endpoint_index;
+            ctx.response_header_modifier = response_header_modifier;
             Ok((FilterAction::Continue, extra_headers))
         },
         Ok(FilterAction::Reject(rejection)) => Ok((FilterAction::Reject(rejection), Vec::new())),

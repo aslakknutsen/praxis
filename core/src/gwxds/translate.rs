@@ -202,7 +202,7 @@ pub fn translate(resources: &[Resource]) -> Config {
 
 fn build_listener(gw_listener: &GwListener, chain_name: &str, name_override: Option<&str>) -> Listener {
     let protocol = match gw_listener.protocol() {
-        Protocol::Tcp | Protocol::Tls => ProtocolKind::Tcp,
+        Protocol::Tcp | Protocol::Tls | Protocol::Udp => ProtocolKind::Tcp,
         Protocol::Http | Protocol::Https | Protocol::Unknown => ProtocolKind::Http,
     };
 
@@ -250,8 +250,13 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
             .request_header_modifier
             .as_ref()
             .and_then(proto_http_request_header_modifier);
+        let resp_hdr_modifier = gw_route
+            .response_header_modifier
+            .as_ref()
+            .and_then(proto_http_request_header_modifier);
 
         let invalid_backend_ref = gw_route.invalid_backend_ref;
+        let is_grpc_route = gw_route.grpc_route;
 
         if gw_route.backends.is_empty() && redirect_cfg.is_none() && !invalid_backend_ref {
             continue;
@@ -331,12 +336,14 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
                     path_prefix: "/".to_owned(),
                     path_exact: None,
                     path_regex: None,
-                    methods: None,
+                    methods: if is_grpc_route { Some(vec!["POST".to_owned()]) } else { None },
                     host: host.clone(),
                     headers: None,
                     redirect: redirect_cfg.clone(),
                     request_header_modifier: hdr_modifier.clone(),
+                    response_header_modifier: resp_hdr_modifier.clone(),
                     invalid_backend_ref,
+                    grpc_route: is_grpc_route,
                     cluster: Arc::from(cluster_name.as_str()),
                 })
                 .collect()
@@ -351,7 +358,9 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
                         &hostnames,
                         redirect_cfg.clone(),
                         hdr_modifier.clone(),
+                        resp_hdr_modifier.clone(),
                         invalid_backend_ref,
+                        is_grpc_route,
                     )
                 })
                 .collect()
@@ -526,11 +535,12 @@ fn expand_route_match(
     hostnames: &[Option<String>],
     redirect: Option<RedirectAction>,
     request_header_modifier: Option<RequestHeaderModifier>,
+    response_header_modifier: Option<RequestHeaderModifier>,
     invalid_backend_ref: bool,
+    grpc_route: bool,
 ) -> Vec<Route> {
-    let (path_prefix, path_exact, path_regex) = resolve_path_match(m);
+    let (path_prefix, path_exact, path_regex, methods) = resolve_grpc_or_http_match(m, grpc_route);
     let headers = if m.headers.is_empty() { None } else { Some(m.headers.clone()) };
-    let methods = if m.methods.is_empty() { None } else { Some(m.methods.clone()) };
 
     hostnames
         .iter()
@@ -543,24 +553,54 @@ fn expand_route_match(
             headers: headers.clone(),
             redirect: redirect.clone(),
             request_header_modifier: request_header_modifier.clone(),
+            response_header_modifier: response_header_modifier.clone(),
             invalid_backend_ref,
+            grpc_route,
             cluster: Arc::from(cluster_name),
         })
         .collect()
 }
 
-fn resolve_path_match(
+/// Convert a gRPC service/method match (or plain HTTP match) into path + method constraints.
+///
+/// gRPC over HTTP/2 uses `POST /{service}/{method}`, so:
+/// - Both service + method set -> exact path `/{service}/{method}`, method POST
+/// - Only service set -> prefix path `/{service}/`, method POST
+/// - Neither (wildcard gRPC) -> prefix `/`, method POST
+/// - Not a gRPC route -> fall through to normal HTTP path matching
+fn resolve_grpc_or_http_match(
     m: &super::proto::RouteMatch,
-) -> (String, Option<String>, Option<String>) {
-    if !m.path_exact.is_empty() {
-        ("/".to_owned(), Some(m.path_exact.clone()), None)
-    } else if !m.path_regex.is_empty() {
-        ("/".to_owned(), None, Some(m.path_regex.clone()))
-    } else if !m.path_prefix.is_empty() {
-        let prefix = normalize_prefix(&m.path_prefix);
-        (prefix, None, None)
+    grpc_route: bool,
+) -> (String, Option<String>, Option<String>, Option<Vec<String>>) {
+    if grpc_route && (!m.grpc_service.is_empty() || !m.grpc_method.is_empty()) {
+        let methods = Some(vec!["POST".to_owned()]);
+        if !m.grpc_service.is_empty() && !m.grpc_method.is_empty() {
+            let path = format!("/{}/{}", m.grpc_service, m.grpc_method);
+            ("/".to_owned(), Some(path), None, methods)
+        } else if !m.grpc_service.is_empty() {
+            let prefix = format!("/{}", m.grpc_service);
+            (prefix, None, None, methods)
+        } else {
+            ("/".to_owned(), None, None, methods)
+        }
     } else {
-        ("/".to_owned(), None, None)
+        let methods = if grpc_route {
+            Some(vec!["POST".to_owned()])
+        } else if m.methods.is_empty() {
+            None
+        } else {
+            Some(m.methods.clone())
+        };
+        let (pp, pe, pr) = if !m.path_exact.is_empty() {
+            ("/".to_owned(), Some(m.path_exact.clone()), None)
+        } else if !m.path_regex.is_empty() {
+            ("/".to_owned(), None, Some(m.path_regex.clone()))
+        } else if !m.path_prefix.is_empty() {
+            (normalize_prefix(&m.path_prefix), None, None)
+        } else {
+            ("/".to_owned(), None, None)
+        };
+        (pp, pe, pr, methods)
     }
 }
 
@@ -793,6 +833,7 @@ mod lb_yaml_tests {
                         tls: None,
                     },
                 ],
+                ..Default::default()
             }],
         };
 
@@ -855,6 +896,7 @@ mod lb_yaml_tests {
                         tls: None,
                     },
                 ],
+                ..Default::default()
             }],
         };
 
@@ -894,6 +936,7 @@ mod lb_yaml_tests {
                     inference_pool: None,
                     tls: None,
                 }],
+                ..Default::default()
             }],
         };
 
@@ -936,6 +979,7 @@ mod lb_yaml_tests {
                     inference_pool: None,
                     tls: None,
                 }],
+                ..Default::default()
             }],
         };
 
@@ -1014,6 +1058,7 @@ mod merge_tests {
                 request_header_modifier: None,
                 invalid_backend_ref: false,
                 backends: vec![backend.clone()],
+                ..Default::default()
             }],
         };
 
@@ -1036,6 +1081,7 @@ mod merge_tests {
                 request_header_modifier: None,
                 invalid_backend_ref: false,
                 backends: vec![backend],
+                ..Default::default()
             }],
         };
 
@@ -1079,6 +1125,7 @@ mod merge_tests {
                 request_header_modifier: None,
                 invalid_backend_ref: true,
                 backends: vec![],
+                ..Default::default()
             }],
         };
 
@@ -1092,5 +1139,144 @@ mod merge_tests {
             .expect("router filter");
         let row = &router.config["routes"].as_sequence().expect("routes seq")[0];
         assert_eq!(row.get("invalid_backend_ref").and_then(|v| v.as_bool()), Some(true));
+    }
+
+    #[test]
+    fn grpc_route_service_method_becomes_exact_path() {
+        let resource = Resource {
+            key: "ns/gw/http".into(),
+            listener: Some(GwListener {
+                key: "ns/gw/http".into(),
+                hostname: "".into(),
+                port: 80,
+                protocol: Protocol::Http as i32,
+                tls: None,
+                allowed_routes: vec![],
+            }),
+            routes: vec![GwRoute {
+                key: "ns/grpc-route/0".into(),
+                listener_key: "ns/gw/http".into(),
+                hostnames: vec![],
+                grpc_route: true,
+                matches: vec![super::super::proto::RouteMatch {
+                    grpc_service: "helloworld.Greeter".into(),
+                    grpc_method: "SayHello".into(),
+                    ..Default::default()
+                }],
+                backends: vec![Backend {
+                    host: "grpc-svc.ns.svc.cluster.local".into(),
+                    port: 50051,
+                    dial_port: 0,
+                    weight: 1,
+                    inference_pool: None,
+                    tls: None,
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let cfg = translate(&[resource]);
+        let router = cfg.filter_chains[0]
+            .filters
+            .iter()
+            .find(|f| f.filter_type == "router")
+            .expect("router filter");
+        let routes = router.config["routes"].as_sequence().expect("routes seq");
+        assert_eq!(routes.len(), 1);
+        let row: Route = serde_yaml::from_value(routes[0].clone()).expect("deserialise route");
+        assert_eq!(row.path_exact.as_deref(), Some("/helloworld.Greeter/SayHello"));
+        assert_eq!(row.methods.as_deref(), Some(&["POST".to_owned()][..]));
+        assert!(row.grpc_route);
+    }
+
+    #[test]
+    fn grpc_route_service_only_becomes_prefix_path() {
+        let resource = Resource {
+            key: "ns/gw/http".into(),
+            listener: Some(GwListener {
+                key: "ns/gw/http".into(),
+                hostname: "".into(),
+                port: 80,
+                protocol: Protocol::Http as i32,
+                tls: None,
+                allowed_routes: vec![],
+            }),
+            routes: vec![GwRoute {
+                key: "ns/grpc-route/0".into(),
+                listener_key: "ns/gw/http".into(),
+                hostnames: vec![],
+                grpc_route: true,
+                matches: vec![super::super::proto::RouteMatch {
+                    grpc_service: "helloworld.Greeter".into(),
+                    ..Default::default()
+                }],
+                backends: vec![Backend {
+                    host: "grpc-svc.ns.svc.cluster.local".into(),
+                    port: 50051,
+                    dial_port: 0,
+                    weight: 1,
+                    inference_pool: None,
+                    tls: None,
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let cfg = translate(&[resource]);
+        let router = cfg.filter_chains[0]
+            .filters
+            .iter()
+            .find(|f| f.filter_type == "router")
+            .expect("router filter");
+        let routes = router.config["routes"].as_sequence().expect("routes seq");
+        let row: Route = serde_yaml::from_value(routes[0].clone()).expect("deserialise route");
+        assert_eq!(row.path_prefix, "/helloworld.Greeter");
+        assert!(row.path_exact.is_none());
+        assert_eq!(row.methods.as_deref(), Some(&["POST".to_owned()][..]));
+        assert!(row.grpc_route);
+    }
+
+    #[test]
+    fn grpc_route_wildcard_becomes_root_prefix() {
+        let resource = Resource {
+            key: "ns/gw/http".into(),
+            listener: Some(GwListener {
+                key: "ns/gw/http".into(),
+                hostname: "".into(),
+                port: 80,
+                protocol: Protocol::Http as i32,
+                tls: None,
+                allowed_routes: vec![],
+            }),
+            routes: vec![GwRoute {
+                key: "ns/grpc-route/0".into(),
+                listener_key: "ns/gw/http".into(),
+                hostnames: vec![],
+                grpc_route: true,
+                matches: vec![],
+                backends: vec![Backend {
+                    host: "grpc-svc.ns.svc.cluster.local".into(),
+                    port: 50051,
+                    dial_port: 0,
+                    weight: 1,
+                    inference_pool: None,
+                    tls: None,
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let cfg = translate(&[resource]);
+        let router = cfg.filter_chains[0]
+            .filters
+            .iter()
+            .find(|f| f.filter_type == "router")
+            .expect("router filter");
+        let routes = router.config["routes"].as_sequence().expect("routes seq");
+        let row: Route = serde_yaml::from_value(routes[0].clone()).expect("deserialise route");
+        assert_eq!(row.path_prefix, "/");
+        assert!(row.path_exact.is_none());
+        assert_eq!(row.methods.as_deref(), Some(&["POST".to_owned()][..]));
+        assert!(row.grpc_route);
     }
 }

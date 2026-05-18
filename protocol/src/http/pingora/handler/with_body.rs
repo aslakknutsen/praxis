@@ -213,8 +213,10 @@ impl ProxyHttp for PingoraHttpHandler {
         result
     }
 
-    async fn upstream_peer(&self, _session: &mut Session, ctx: &mut Self::CTX) -> Result<Box<HttpPeer>> {
-        upstream_peer::execute(ctx)
+    async fn upstream_peer(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<Box<HttpPeer>> {
+        let mut peer = upstream_peer::execute(ctx)?;
+        upstream_peer::enable_h2_for_grpc(session, &mut peer);
+        Ok(peer)
     }
 
     async fn logging(&self, _session: &mut Session, e: Option<&pingora_core::Error>, ctx: &mut Self::CTX) {

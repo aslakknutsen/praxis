@@ -31,6 +31,7 @@ fn match_root() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "default".into(),
+    ..Default::default()
     }]);
     let route = router.match_route("/anything", None, &HeaderMap::new(), None).unwrap();
     assert_eq!(&*route.cluster, "default", "root prefix should match any path");
@@ -50,6 +51,7 @@ fn longest_prefix_wins() {
             request_header_modifier: None,
             invalid_backend_ref: false,
             cluster: "default".into(),
+        ..Default::default()
         },
         Route {
             path_prefix: "/api/".into(),
@@ -62,6 +64,7 @@ fn longest_prefix_wins() {
             request_header_modifier: None,
             invalid_backend_ref: false,
             cluster: "api".into(),
+        ..Default::default()
         },
     ]);
 
@@ -86,6 +89,7 @@ fn host_filtering() {
             request_header_modifier: None,
             invalid_backend_ref: false,
             cluster: "api".into(),
+        ..Default::default()
         },
         Route {
             path_prefix: "/".into(),
@@ -98,6 +102,7 @@ fn host_filtering() {
             request_header_modifier: None,
             invalid_backend_ref: false,
             cluster: "default".into(),
+        ..Default::default()
         },
     ]);
 
@@ -131,6 +136,7 @@ fn host_with_port() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "api".into(),
+    ..Default::default()
     }]);
 
     let route = router
@@ -155,6 +161,7 @@ fn no_match() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "api".into(),
+    ..Default::default()
     }]);
     assert!(
         router.match_route("/other", None, &HeaderMap::new(), None).is_none(),
@@ -175,6 +182,7 @@ fn no_match_wrong_host() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "api".into(),
+    ..Default::default()
     }]);
     assert!(
         router.match_route("/", Some("other.com"), &HeaderMap::new(), None).is_none(),
@@ -222,6 +230,7 @@ async fn on_request_sets_cluster_on_match() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "default".into(),
+    ..Default::default()
     }]);
     let req = crate::test_utils::make_request(http::Method::GET, "/");
     let mut ctx = crate::test_utils::make_filter_context(&req);
@@ -250,6 +259,7 @@ async fn on_request_rejects_on_no_match() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "api".into(),
+    ..Default::default()
     }]);
     let req = crate::test_utils::make_request(http::Method::GET, "/other");
     let mut ctx = crate::test_utils::make_filter_context(&req);
@@ -275,6 +285,7 @@ async fn on_request_combined_host_and_path() {
             request_header_modifier: None,
             invalid_backend_ref: false,
             cluster: "api".into(),
+        ..Default::default()
         },
         Route {
             path_prefix: "/".into(),
@@ -287,6 +298,7 @@ async fn on_request_combined_host_and_path() {
             request_header_modifier: None,
             invalid_backend_ref: false,
             cluster: "default".into(),
+        ..Default::default()
         },
     ]);
 
@@ -323,6 +335,7 @@ fn route_matches_by_header() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "claude_sonnet".into(),
+    ..Default::default()
     }]);
 
     let mut hdrs = HeaderMap::new();
@@ -347,6 +360,7 @@ fn route_skips_mismatched_header() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "claude_sonnet".into(),
+    ..Default::default()
     }]);
 
     let mut hdrs = HeaderMap::new();
@@ -371,6 +385,7 @@ fn route_with_headers_wins_over_plain() {
             request_header_modifier: None,
             invalid_backend_ref: false,
             cluster: "claude_sonnet".into(),
+        ..Default::default()
         },
         Route {
             path_prefix: "/".into(),
@@ -383,6 +398,7 @@ fn route_with_headers_wins_over_plain() {
             request_header_modifier: None,
             invalid_backend_ref: false,
             cluster: "default".into(),
+        ..Default::default()
         },
     ]);
 
@@ -409,6 +425,7 @@ fn route_without_headers_used_as_fallback() {
             request_header_modifier: None,
             invalid_backend_ref: false,
             cluster: "claude_sonnet".into(),
+        ..Default::default()
         },
         Route {
             path_prefix: "/".into(),
@@ -421,6 +438,7 @@ fn route_without_headers_used_as_fallback() {
             request_header_modifier: None,
             invalid_backend_ref: false,
             cluster: "default".into(),
+        ..Default::default()
         },
     ]);
 
@@ -447,6 +465,7 @@ async fn host_falls_back_to_uri_authority() {
             request_header_modifier: None,
             invalid_backend_ref: false,
             cluster: "api".into(),
+        ..Default::default()
         },
         Route {
             path_prefix: "/".into(),
@@ -459,6 +478,7 @@ async fn host_falls_back_to_uri_authority() {
             request_header_modifier: None,
             invalid_backend_ref: false,
             cluster: "default".into(),
+        ..Default::default()
         },
     ]);
 
@@ -489,6 +509,7 @@ fn multi_value_header_matches_any() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "claude_sonnet".into(),
+    ..Default::default()
     }]);
 
     let mut hdrs = HeaderMap::new();
@@ -514,6 +535,7 @@ fn ipv6_host_with_port() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "ipv6".into(),
+    ..Default::default()
     }]);
 
     let route = router.match_route("/", Some("[::1]:8080"), &HeaderMap::new(), None).unwrap();
@@ -533,6 +555,7 @@ fn ipv6_host_without_port() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "ipv6".into(),
+    ..Default::default()
     }]);
 
     let route = router.match_route("/", Some("[::1]"), &HeaderMap::new(), None).unwrap();
@@ -562,6 +585,7 @@ fn route_with_host_and_headers() {
             request_header_modifier: None,
             invalid_backend_ref: false,
             cluster: "api-v2".into(),
+        ..Default::default()
         },
         Route {
             path_prefix: "/".into(),
@@ -574,6 +598,7 @@ fn route_with_host_and_headers() {
             request_header_modifier: None,
             invalid_backend_ref: false,
             cluster: "default".into(),
+        ..Default::default()
         },
     ]);
 
@@ -600,6 +625,7 @@ fn same_prefix_same_constraints_first_wins() {
             request_header_modifier: None,
             invalid_backend_ref: false,
             cluster: "first".into(),
+        ..Default::default()
         },
         Route {
             path_prefix: "/".into(),
@@ -612,6 +638,7 @@ fn same_prefix_same_constraints_first_wins() {
             request_header_modifier: None,
             invalid_backend_ref: false,
             cluster: "second".into(),
+        ..Default::default()
         },
     ]);
 
@@ -638,6 +665,7 @@ fn empty_headers_map_matches_everything() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "vacuous".into(),
+    ..Default::default()
     }]);
 
     let route = router.match_route("/test", None, &HeaderMap::new(), None).unwrap();
@@ -657,6 +685,7 @@ async fn on_request_strips_port_from_host_header() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "example".into(),
+    ..Default::default()
     }]);
 
     let mut req = crate::test_utils::make_request(http::Method::GET, "/");
@@ -687,6 +716,7 @@ fn route_matches_request_path_only_hit() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "api".into(),
+    ..Default::default()
     };
     let resolved = ResolvedRoute {
         route,
@@ -711,6 +741,7 @@ fn route_matches_request_path_miss() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "api".into(),
+    ..Default::default()
     };
     let resolved = ResolvedRoute {
         route,
@@ -735,6 +766,7 @@ fn route_matches_request_host_hit() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "ex".into(),
+    ..Default::default()
     };
     let resolved = ResolvedRoute {
         route,
@@ -759,6 +791,7 @@ fn route_matches_request_host_miss() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "ex".into(),
+    ..Default::default()
     };
     let resolved = ResolvedRoute {
         route,
@@ -783,6 +816,7 @@ fn route_matches_request_host_miss_when_no_host() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "ex".into(),
+    ..Default::default()
     };
     let resolved = ResolvedRoute {
         route,
@@ -807,6 +841,7 @@ fn route_matches_request_header_hit() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "h".into(),
+    ..Default::default()
     };
     let resolved = ResolvedRoute {
         route,
@@ -833,6 +868,7 @@ fn route_matches_request_header_miss() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "h".into(),
+    ..Default::default()
     };
     let resolved = ResolvedRoute {
         route,
@@ -859,6 +895,7 @@ fn route_matches_request_compound() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "c".into(),
+    ..Default::default()
     };
     let resolved = ResolvedRoute {
         route,
@@ -893,6 +930,7 @@ fn update_best_match_prefers_more_constraints_at_same_prefix() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "a".into(),
+    ..Default::default()
     };
     let route_b = Route {
         path_prefix: "/".into(),
@@ -905,6 +943,7 @@ fn update_best_match_prefers_more_constraints_at_same_prefix() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "b".into(),
+    ..Default::default()
     };
     let best = update_best_match(None, &route_a);
     let best = update_best_match(best, &route_b);
@@ -928,6 +967,7 @@ fn update_best_match_prefers_longer_prefix() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "short".into(),
+    ..Default::default()
     };
     let long = Route {
         path_prefix: "/api/".into(),
@@ -940,6 +980,7 @@ fn update_best_match_prefers_longer_prefix() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "long".into(),
+    ..Default::default()
     };
     let best = update_best_match(None, &short);
     let best = update_best_match(best, &long);
@@ -959,6 +1000,7 @@ fn update_best_match_keeps_current_when_dominated() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "first".into(),
+    ..Default::default()
     };
     let second = Route {
         path_prefix: "/".into(),
@@ -971,6 +1013,7 @@ fn update_best_match_keeps_current_when_dominated() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "second".into(),
+    ..Default::default()
     };
     let best = update_best_match(None, &first);
     let best = update_best_match(best, &second);
@@ -994,6 +1037,7 @@ fn should_stop_early_true_when_prefix_shorter_than_best() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "best".into(),
+    ..Default::default()
     };
     let shorter = Route {
         path_prefix: "/api/".into(),
@@ -1006,6 +1050,7 @@ fn should_stop_early_true_when_prefix_shorter_than_best() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "shorter".into(),
+    ..Default::default()
     };
     let best = Some((path_specificity(&best_route), 0, &best_route));
     assert!(
@@ -1027,6 +1072,7 @@ fn should_stop_early_false_when_prefix_equal_to_best() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "best".into(),
+    ..Default::default()
     };
     let same = Route {
         path_prefix: "/api/".into(),
@@ -1039,6 +1085,7 @@ fn should_stop_early_false_when_prefix_equal_to_best() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "same".into(),
+    ..Default::default()
     };
     let best = Some((path_specificity(&best_route), 0, &best_route));
     assert!(
@@ -1060,6 +1107,7 @@ fn should_stop_early_false_when_no_best() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "any".into(),
+    ..Default::default()
     };
     assert!(
         !should_stop_early(None, &route),
@@ -1080,6 +1128,7 @@ fn path_prefix_without_trailing_slash_is_allowed() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "api".into(),
+    ..Default::default()
     }])
     .expect("Gateway-aligned prefix should not require trailing slash");
     let route = router.match_route("/api/users", None, &HeaderMap::new(), None).unwrap();
@@ -1103,6 +1152,7 @@ fn path_prefix_exact_segment_matches_without_extra_slash() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "t".into(),
+    ..Default::default()
     }]);
     for path in ["/test", "/test/", "/test/x"] {
         let route = router.match_route(path, None, &HeaderMap::new(), None).unwrap_or_else(|| {
@@ -1129,6 +1179,7 @@ fn wildcard_host_matches_subdomain() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "wildcard".into(),
+    ..Default::default()
     }]);
 
     let route = router
@@ -1153,6 +1204,7 @@ fn wildcard_host_does_not_match_bare_domain() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "wildcard".into(),
+    ..Default::default()
     }]);
 
     assert!(
@@ -1176,6 +1228,7 @@ fn wildcard_host_matches_multi_level_subdomain_gateway_semantics() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "wildcard".into(),
+    ..Default::default()
     }]);
 
     assert!(
@@ -1199,6 +1252,7 @@ fn wildcard_host_with_port() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "wildcard".into(),
+    ..Default::default()
     }]);
 
     let route = router
@@ -1223,6 +1277,7 @@ fn wildcard_host_case_insensitive() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "wildcard".into(),
+    ..Default::default()
     }]);
 
     let route = router
@@ -1248,6 +1303,7 @@ fn wildcard_host_with_fallback() {
             request_header_modifier: None,
             invalid_backend_ref: false,
             cluster: "wildcard".into(),
+        ..Default::default()
         },
         Route {
             path_prefix: "/".into(),
@@ -1260,6 +1316,7 @@ fn wildcard_host_with_fallback() {
             request_header_modifier: None,
             invalid_backend_ref: false,
             cluster: "default".into(),
+        ..Default::default()
         },
     ]);
 
@@ -1292,6 +1349,7 @@ fn exact_host_wins_over_wildcard_same_constraints() {
             request_header_modifier: None,
             invalid_backend_ref: false,
             cluster: "exact".into(),
+        ..Default::default()
         },
         Route {
             path_prefix: "/".into(),
@@ -1304,6 +1362,7 @@ fn exact_host_wins_over_wildcard_same_constraints() {
             request_header_modifier: None,
             invalid_backend_ref: false,
             cluster: "wildcard".into(),
+        ..Default::default()
         },
     ]);
 
@@ -1329,6 +1388,7 @@ fn wildcard_host_does_not_match_empty_subdomain() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "wildcard".into(),
+    ..Default::default()
     }]);
 
     assert!(
@@ -1353,6 +1413,7 @@ async fn on_request_wildcard_host_via_host_header() {
             request_header_modifier: None,
             invalid_backend_ref: false,
             cluster: "wildcard".into(),
+        ..Default::default()
         },
         Route {
             path_prefix: "/".into(),
@@ -1365,6 +1426,7 @@ async fn on_request_wildcard_host_via_host_header() {
             request_header_modifier: None,
             invalid_backend_ref: false,
             cluster: "default".into(),
+        ..Default::default()
         },
     ]);
 
@@ -1393,6 +1455,7 @@ async fn on_request_uses_original_path_when_rewritten_path_is_none() {
             request_header_modifier: None,
             invalid_backend_ref: false,
             cluster: "api".into(),
+        ..Default::default()
         },
         Route {
             path_prefix: "/".into(),
@@ -1405,6 +1468,7 @@ async fn on_request_uses_original_path_when_rewritten_path_is_none() {
             request_header_modifier: None,
             invalid_backend_ref: false,
             cluster: "default".into(),
+        ..Default::default()
         },
     ]);
     let req = crate::test_utils::make_request(http::Method::GET, "/api/users");
@@ -1435,6 +1499,7 @@ async fn on_request_uses_rewritten_path_when_set() {
             request_header_modifier: None,
             invalid_backend_ref: false,
             cluster: "internal".into(),
+        ..Default::default()
         },
         Route {
             path_prefix: "/".into(),
@@ -1447,6 +1512,7 @@ async fn on_request_uses_rewritten_path_when_set() {
             request_header_modifier: None,
             invalid_backend_ref: false,
             cluster: "default".into(),
+        ..Default::default()
         },
     ]);
     let req = crate::test_utils::make_request(http::Method::GET, "/api/v1/data");
@@ -1477,6 +1543,7 @@ async fn on_request_rewritten_path_no_match_still_rejects() {
         request_header_modifier: None,
         invalid_backend_ref: false,
         cluster: "api".into(),
+    ..Default::default()
     }]);
     let req = crate::test_utils::make_request(http::Method::GET, "/api/users");
     let mut ctx = crate::test_utils::make_filter_context(&req);

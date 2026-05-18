@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 /// assert!(route.host.is_none());
 /// assert!(route.headers.is_none());
 /// ```
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Route {
     /// Path prefix to match. The longest matching prefix wins.
@@ -77,9 +77,17 @@ pub struct Route {
     #[serde(default)]
     pub request_header_modifier: Option<RequestHeaderModifier>,
 
+    /// Response header changes after this route matches (GRPCRoute ResponseHeaderModifier).
+    #[serde(default)]
+    pub response_header_modifier: Option<RequestHeaderModifier>,
+
     /// When true, backend refs did not resolve — reject with HTTP 500 (Gateway conformance).
     #[serde(default)]
     pub invalid_backend_ref: bool,
+
+    /// True when this rule came from a GRPCRoute (enables gRPC-specific behaviour).
+    #[serde(default)]
+    pub grpc_route: bool,
 
     /// Name of the cluster to route matched requests to.
     pub cluster: Arc<str>,

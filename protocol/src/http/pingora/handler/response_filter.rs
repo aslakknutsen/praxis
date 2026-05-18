@@ -36,6 +36,7 @@ pub(super) async fn execute(
     ctx.upstream_response_status = Some(upstream_response.status.as_u16());
 
     let (result, _headers_modified) = run_response_pipeline(pipeline, ctx, &mut resp).await?;
+    apply_response_header_modifier(ctx, &mut resp);
     handle_response_result(result, upstream_response, &resp)
 }
 
@@ -126,6 +127,34 @@ fn is_websocket_101(headers: &http::HeaderMap) -> bool {
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.trim().eq_ignore_ascii_case("websocket"))
         && headers.get("sec-websocket-accept").is_some()
+}
+
+/// Apply the response header modifier from the router (GRPCRoute ResponseHeaderModifier).
+fn apply_response_header_modifier(ctx: &PingoraRequestCtx, resp: &mut praxis_filter::Response) {
+    let Some(ref m) = ctx.response_header_modifier else {
+        return;
+    };
+    for name in &m.remove {
+        if let Ok(hn) = http::header::HeaderName::from_bytes(name.as_bytes()) {
+            resp.headers.remove(&hn);
+        }
+    }
+    for h in &m.set {
+        if let (Ok(hn), Ok(hv)) = (
+            http::header::HeaderName::from_bytes(h.name.as_bytes()),
+            http::header::HeaderValue::from_str(&h.value),
+        ) {
+            resp.headers.insert(hn, hv);
+        }
+    }
+    for h in &m.add {
+        if let (Ok(hn), Ok(hv)) = (
+            http::header::HeaderName::from_bytes(h.name.as_bytes()),
+            http::header::HeaderValue::from_str(&h.value),
+        ) {
+            resp.headers.append(hn, hv);
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------

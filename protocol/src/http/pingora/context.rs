@@ -121,6 +121,9 @@ pub struct PingoraRequestCtx {
     /// for passive health recording in the logging hook.
     pub selected_endpoint_index: Option<usize>,
 
+    /// Response header modifier set by the router (GRPCRoute ResponseHeaderModifier).
+    pub response_header_modifier: Option<praxis_core::config::RequestHeaderModifier>,
+
     /// Rewritten URI path for the upstream request.
     ///
     /// Set by the `path_rewrite` filter via [`HttpFilterContext`] and
@@ -164,6 +167,7 @@ macro_rules! filter_context {
             response_body_bytes: $ctx.response_body_bytes,
             response_body_mode: $ctx.response_body_mode,
             response_header: $response_header,
+            response_header_modifier: $ctx.response_header_modifier.take(),
             response_headers_modified: false,
             rewritten_path: $ctx.rewritten_path.take(),
             selected_endpoint_index: $ctx.selected_endpoint_index,
@@ -263,6 +267,7 @@ impl Default for PingoraRequestCtx {
             response_body_released: false,
             upstream_response_status: None,
             response_phase_done: false,
+            response_header_modifier: None,
             retries: 0,
             rewritten_path: None,
             selected_endpoint_index: None,

@@ -31,6 +31,7 @@ enum Protocol {
   HTTPS   = 2;
   TLS     = 3;
   TCP     = 4;
+  UDP     = 5;
 }
 
 // FailureMode controls proxy behaviour when an InferencePool endpoint picker
@@ -116,7 +117,7 @@ message Backend {
   // Backend service port.
   uint32 port = 2;
   // Traffic weight for weighted routing. 0 means no traffic; omit on the wire
-  // only when the control plane applies Gateway API’s default (1 for unspecified ref weight).
+  // only when the control plane applies Gateway API's default (1 for unspecified ref weight).
   uint32 weight = 3;
   // Set when this backend is an InferencePool.
   InferencePool inference_pool = 4;
@@ -150,16 +151,15 @@ message RequestHeaderModifier {
 
 // RouteMatch describes matching criteria for a single route rule.
 message RouteMatch {
-  // HTTP path prefix match. Empty means match all paths.
+  // HTTP-style path matching (HTTPRoute).
   string path_prefix = 1;
-  // Exact path match. Takes priority over path_prefix when set.
   string path_exact = 2;
-  // Regex path match.
   string path_regex = 3;
-  // Required header key/value matches.
   map<string, string> headers = 4;
-  // HTTP methods to match. Empty means all methods.
   repeated string methods = 5;
+  // GRPCRoute (Gateway API); empty = wildcard.
+  string grpc_service = 6;
+  string grpc_method = 7;
 }
 
 // Route is a resolved route rule attached to a listener.
@@ -180,6 +180,16 @@ message Route {
   RequestHeaderModifier request_header_modifier = 7;
   // When true, the rule matched but backend refs did not resolve — respond with HTTP 500.
   bool invalid_backend_ref = 8;
+  // Per-route response header changes (GRPCRoute ResponseHeaderModifier).
+  RequestHeaderModifier response_header_modifier = 9;
+  // True when this rule came from a GRPCRoute (vs HTTPRoute).
+  bool grpc_route = 10;
+  // True when this rule came from a TLSRoute (SNI-based routing on TLS listeners).
+  bool tls_route = 11;
+  // True when this rule came from a TCPRoute (L4 routing on TCP listeners).
+  bool tcp_route = 12;
+  // True when this rule came from a UDPRoute (L4 routing on UDP listeners).
+  bool udp_route = 13;
 }
 
 // Resource is the top-level xDS resource served to a gwxds-capable proxy.

@@ -49,6 +49,7 @@ pub(crate) fn make_ctx(req: &Request) -> HttpFilterContext<'_> {
         response_body_bytes: 0,
         response_body_mode: praxis_filter::BodyMode::Stream,
         response_header: None,
+        response_header_modifier: None,
         response_headers_modified: false,
         rewritten_path: None,
         selected_endpoint_index: None,
