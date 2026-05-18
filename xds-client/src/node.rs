@@ -32,6 +32,8 @@ const DEFAULT_TRUST_DOMAIN: &str = "cluster.local";
 /// - `ISTIO_VERSION` or `ISTIO_META_ISTIO_VERSION` (optional): istiod expects JSON key `ISTIO_VERSION`
 ///   (same as Envoy bootstrap); omitting it logs `Istio Version is not found in metadata`. Set to the
 ///   control plane / mesh version your gateway targets (e.g. Helm `global.tag`).
+/// - `XDS_NODE_ID` (optional): if non-empty after trim, replaces the computed `node.id`. istiod still
+///   expects the four `~`-separated segments; use only when you know the id you need.
 ///
 /// # Errors
 ///
@@ -54,7 +56,7 @@ pub(crate) fn node_from_env() -> Result<Node, String> {
     let trust_domain =
         std::env::var("TRUST_DOMAIN").unwrap_or_else(|_| DEFAULT_TRUST_DOMAIN.to_owned());
 
-    let node = build_node(
+    let mut node = build_node(
         &gateway_name,
         &gateway_namespace,
         pod_name.as_deref(),
@@ -62,6 +64,13 @@ pub(crate) fn node_from_env() -> Result<Node, String> {
         instance_ip.as_deref(),
         &trust_domain,
     );
+
+    if let Ok(override_id) = std::env::var("XDS_NODE_ID") {
+        let override_id = override_id.trim();
+        if !override_id.is_empty() {
+            node.id = override_id.to_owned();
+        }
+    }
 
     info!(
         node_id = %node.id,
