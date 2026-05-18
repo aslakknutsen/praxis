@@ -165,6 +165,7 @@ struct SniRouterConfig {
     default_upstream: Option<String>,
 
     /// Route entries mapping server names to upstreams.
+    #[serde(default)]
     routes: Vec<SniRouteEntry>,
 }
 
@@ -185,10 +186,8 @@ struct SniRouteEntry {
 
 /// Build the filter from validated config.
 fn build_filter(cfg: SniRouterConfig) -> Result<Box<dyn TcpFilter>, FilterError> {
-    if cfg.routes.is_empty() && cfg.default_upstream.is_none() {
-        return Err("sni_router: at least one route or a default_upstream is required".into());
-    }
-
+    // Empty routes with no default is valid: all connections are rejected with 421.
+    // This handles TLS passthrough listeners that have no valid backends yet.
     let mut tables = RouteTables::default();
     for entry in &cfg.routes {
         validate_route_entry(entry, &mut tables)?;
@@ -574,18 +573,34 @@ routes:
         );
     }
 
-    #[test]
-    fn reject_empty_routes_no_default() {
+    #[tokio::test]
+    async fn empty_routes_no_default_rejects_all() {
         let yaml: serde_yaml::Value = serde_yaml::from_str(
             r#"
 routes: []
 "#,
         )
         .expect("valid YAML");
-        let err = expect_config_error(&yaml);
+        let filter = SniRouterFilter::from_config(&yaml)
+            .expect("empty routes without default should be accepted");
+        let mut ctx = make_ctx(Some("anything.example.com"));
+        let action = filter.on_connect(&mut ctx).await.expect("on_connect should succeed");
         assert!(
-            err.to_string().contains("at least one route"),
-            "empty routes without default should be rejected: {err}"
+            matches!(action, FilterAction::Reject(r) if r.status == 421),
+            "empty routes without default should reject with 421"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_routes_key_rejects_all() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str("{}").expect("valid YAML");
+        let filter = SniRouterFilter::from_config(&yaml)
+            .expect("missing routes key should be accepted (defaults to empty)");
+        let mut ctx = make_ctx(Some("anything.example.com"));
+        let action = filter.on_connect(&mut ctx).await.expect("on_connect should succeed");
+        assert!(
+            matches!(action, FilterAction::Reject(r) if r.status == 421),
+            "missing routes should reject with 421"
         );
     }
 

@@ -696,9 +696,7 @@ fn build_sni_filter_chain(name: String, group: &[&Resource]) -> FilterChainConfi
     }
 
     let mut config_map: Vec<(&str, YamlValue)> = Vec::new();
-    if !sni_routes.is_empty() {
-        config_map.push(("routes", YamlValue::Sequence(sni_routes)));
-    }
+    config_map.push(("routes", YamlValue::Sequence(sni_routes)));
     if let Some(default) = default_upstream {
         config_map.push(("default_upstream", YamlValue::String(default)));
     }
