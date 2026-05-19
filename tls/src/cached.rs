@@ -443,6 +443,8 @@ mod tests {
                 default: false,
                 key_path: pair.key_path.to_str().unwrap().to_owned(),
                 server_names: Vec::new(),
+                cert_pem_bytes: None,
+                key_pem_bytes: None,
             }),
             ..crate::ClusterTls::default()
         };

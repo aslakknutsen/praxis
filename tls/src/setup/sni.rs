@@ -131,12 +131,16 @@ mod tests {
                 default: false,
                 key_path: certs1.key_path.to_str().expect("key1 path").to_owned(),
                 server_names: vec!["known.example.com".to_owned()],
+                cert_pem_bytes: None,
+                key_pem_bytes: None,
             },
             CertKeyPair {
                 cert_path: certs2.cert_path.to_str().expect("cert2 path").to_owned(),
                 default: true,
                 key_path: certs2.key_path.to_str().expect("key2 path").to_owned(),
                 server_names: Vec::new(),
+                cert_pem_bytes: None,
+                key_pem_bytes: None,
             },
         ];
 
@@ -162,12 +166,16 @@ mod tests {
                 default: false,
                 key_path: certs1.key_path.to_str().expect("key1 path").to_owned(),
                 server_names: vec!["api.example.com".to_owned()],
+                cert_pem_bytes: None,
+                key_pem_bytes: None,
             },
             CertKeyPair {
                 cert_path: certs2.cert_path.to_str().expect("cert2 path").to_owned(),
                 default: false,
                 key_path: certs2.key_path.to_str().expect("key2 path").to_owned(),
                 server_names: vec!["api.example.com".to_owned()],
+                cert_pem_bytes: None,
+                key_pem_bytes: None,
             },
         ];
 
@@ -188,12 +196,16 @@ mod tests {
                 default: false,
                 key_path: certs1.key_path.to_str().expect("key1 path").to_owned(),
                 server_names: vec!["known.example.com".to_owned()],
+                cert_pem_bytes: None,
+                key_pem_bytes: None,
             },
             CertKeyPair {
                 cert_path: certs2.cert_path.to_str().expect("cert2 path").to_owned(),
                 default: true,
                 key_path: certs2.key_path.to_str().expect("key2 path").to_owned(),
                 server_names: Vec::new(),
+                cert_pem_bytes: None,
+                key_pem_bytes: None,
             },
         ];
 
@@ -218,12 +230,16 @@ mod tests {
                 default: true,
                 key_path: certs1.key_path.to_str().expect("key1 path").to_owned(),
                 server_names: Vec::new(),
+                cert_pem_bytes: None,
+                key_pem_bytes: None,
             },
             CertKeyPair {
                 cert_path: certs2.cert_path.to_str().expect("cert2 path").to_owned(),
                 default: false,
                 key_path: certs2.key_path.to_str().expect("key2 path").to_owned(),
                 server_names: vec!["api.example.com".to_owned()],
+                cert_pem_bytes: None,
+                key_pem_bytes: None,
             },
         ];
 
@@ -249,12 +265,16 @@ mod tests {
                 default: false,
                 key_path: certs1.key_path.to_str().expect("key1 path").to_owned(),
                 server_names: vec!["alpha.example.com".to_owned()],
+                cert_pem_bytes: None,
+                key_pem_bytes: None,
             },
             CertKeyPair {
                 cert_path: certs2.cert_path.to_str().expect("cert2 path").to_owned(),
                 default: false,
                 key_path: certs2.key_path.to_str().expect("key2 path").to_owned(),
                 server_names: vec!["beta.example.com".to_owned()],
+                cert_pem_bytes: None,
+                key_pem_bytes: None,
             },
         ];
 

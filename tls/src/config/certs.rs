@@ -61,14 +61,15 @@ pub struct CertKeyPair {
 
     /// Inline certificate PEM bytes. When set, takes precedence over `cert_path`.
     ///
-    /// Not exposed in YAML config; populated by [`CertKeyPair::from_pem`].
-    #[serde(skip)]
+    /// Populated by [`CertKeyPair::from_pem`]; also survives YAML roundtrips
+    /// (e.g. gwxds load_balancer filter config).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cert_pem_bytes: Option<Vec<u8>>,
 
     /// Inline private key PEM bytes. When set, takes precedence over `key_path`.
     ///
-    /// Not exposed in YAML config; populated by [`CertKeyPair::from_pem`].
-    #[serde(skip)]
+    /// Populated by [`CertKeyPair::from_pem`]; also survives YAML roundtrips.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_pem_bytes: Option<Vec<u8>>,
 }
 
@@ -138,8 +139,9 @@ pub struct CaConfig {
 
     /// Inline CA PEM bytes. When set, takes precedence over `ca_path`.
     ///
-    /// Not exposed in YAML config; populated by [`CaConfig::from_pem`].
-    #[serde(skip)]
+    /// Populated by [`CaConfig::from_pem`]; also survives YAML roundtrips
+    /// (e.g. gwxds load_balancer filter config).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ca_pem_bytes: Option<Vec<u8>>,
 }
 
