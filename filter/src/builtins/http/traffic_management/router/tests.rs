@@ -33,7 +33,7 @@ fn match_root() {
         cluster: "default".into(),
     ..Default::default()
     }]);
-    let route = router.match_route("/anything", None, &HeaderMap::new(), None).unwrap();
+    let route = router.match_route("/anything", None, &HeaderMap::new(), None, None).unwrap();
     assert_eq!(&*route.cluster, "default", "root prefix should match any path");
 }
 
@@ -68,10 +68,10 @@ fn longest_prefix_wins() {
         },
     ]);
 
-    let route = router.match_route("/api/users", None, &HeaderMap::new(), None).unwrap();
+    let route = router.match_route("/api/users", None, &HeaderMap::new(), None, None).unwrap();
     assert_eq!(&*route.cluster, "api", "longer /api/ prefix should win");
 
-    let route = router.match_route("/static/main.js", None, &HeaderMap::new(), None).unwrap();
+    let route = router.match_route("/static/main.js", None, &HeaderMap::new(), None, None).unwrap();
     assert_eq!(&*route.cluster, "default", "non-api path should fall back to root");
 }
 
@@ -107,7 +107,7 @@ fn host_filtering() {
     ]);
 
     let route = router
-        .match_route("/", Some("api.example.com"), &HeaderMap::new(), None)
+        .match_route("/", Some("api.example.com"), &HeaderMap::new(), None, None)
         .unwrap();
     assert_eq!(
         &*route.cluster, "api",
@@ -115,7 +115,7 @@ fn host_filtering() {
     );
 
     let route = router
-        .match_route("/", Some("other.example.com"), &HeaderMap::new(), None)
+        .match_route("/", Some("other.example.com"), &HeaderMap::new(), None, None)
         .unwrap();
     assert_eq!(
         &*route.cluster, "default",
@@ -140,7 +140,7 @@ fn host_with_port() {
     }]);
 
     let route = router
-        .match_route("/", Some("api.example.com:8080"), &HeaderMap::new(), None)
+        .match_route("/", Some("api.example.com:8080"), &HeaderMap::new(), None, None)
         .unwrap();
     assert_eq!(
         &*route.cluster, "api",
@@ -164,7 +164,7 @@ fn no_match() {
     ..Default::default()
     }]);
     assert!(
-        router.match_route("/other", None, &HeaderMap::new(), None).is_none(),
+        router.match_route("/other", None, &HeaderMap::new(), None, None).is_none(),
         "non-matching prefix should return None"
     );
 }
@@ -185,7 +185,7 @@ fn no_match_wrong_host() {
     ..Default::default()
     }]);
     assert!(
-        router.match_route("/", Some("other.com"), &HeaderMap::new(), None).is_none(),
+        router.match_route("/", Some("other.com"), &HeaderMap::new(), None, None).is_none(),
         "wrong host should return no match"
     );
 }
@@ -340,7 +340,7 @@ fn route_matches_by_header() {
 
     let mut hdrs = HeaderMap::new();
     hdrs.insert("x-model", HeaderValue::from_static("claude-sonnet-4-5"));
-    let route = router.match_route("/chat", None, &hdrs, None).unwrap();
+    let route = router.match_route("/chat", None, &hdrs, None, None).unwrap();
     assert_eq!(
         &*route.cluster, "claude_sonnet",
         "matching header should select header-constrained route"
@@ -366,7 +366,7 @@ fn route_skips_mismatched_header() {
     let mut hdrs = HeaderMap::new();
     hdrs.insert("x-model", HeaderValue::from_static("mistral-small-latest"));
     assert!(
-        router.match_route("/chat", None, &hdrs, None).is_none(),
+        router.match_route("/chat", None, &hdrs, None, None).is_none(),
         "mismatched header value should return no match"
     );
 }
@@ -404,7 +404,7 @@ fn route_with_headers_wins_over_plain() {
 
     let mut hdrs = HeaderMap::new();
     hdrs.insert("x-model", HeaderValue::from_static("claude-sonnet-4-5"));
-    let route = router.match_route("/chat", None, &hdrs, None).unwrap();
+    let route = router.match_route("/chat", None, &hdrs, None, None).unwrap();
     assert_eq!(
         &*route.cluster, "claude_sonnet",
         "header-constrained route should win over plain"
@@ -444,7 +444,7 @@ fn route_without_headers_used_as_fallback() {
 
     let mut hdrs = HeaderMap::new();
     hdrs.insert("x-model", HeaderValue::from_static("mistral-small-latest"));
-    let route = router.match_route("/chat", None, &hdrs, None).unwrap();
+    let route = router.match_route("/chat", None, &hdrs, None, None).unwrap();
     assert_eq!(
         &*route.cluster, "default",
         "non-matching header should fall back to default"
@@ -515,7 +515,7 @@ fn multi_value_header_matches_any() {
     let mut hdrs = HeaderMap::new();
     hdrs.append("x-model", HeaderValue::from_static("claude-3"));
     hdrs.append("x-model", HeaderValue::from_static("claude-sonnet-4-5"));
-    let route = router.match_route("/chat", None, &hdrs, None).unwrap();
+    let route = router.match_route("/chat", None, &hdrs, None, None).unwrap();
     assert_eq!(
         &*route.cluster, "claude_sonnet",
         "any matching value in multi-value header should match"
@@ -538,7 +538,7 @@ fn ipv6_host_with_port() {
     ..Default::default()
     }]);
 
-    let route = router.match_route("/", Some("[::1]:8080"), &HeaderMap::new(), None).unwrap();
+    let route = router.match_route("/", Some("[::1]:8080"), &HeaderMap::new(), None, None).unwrap();
     assert_eq!(&*route.cluster, "ipv6", "bracketed IPv6 with port should match");
 }
 
@@ -558,7 +558,7 @@ fn ipv6_host_without_port() {
     ..Default::default()
     }]);
 
-    let route = router.match_route("/", Some("[::1]"), &HeaderMap::new(), None).unwrap();
+    let route = router.match_route("/", Some("[::1]"), &HeaderMap::new(), None, None).unwrap();
     assert_eq!(&*route.cluster, "ipv6", "bracketed IPv6 without port should match");
 }
 
@@ -566,7 +566,7 @@ fn ipv6_host_without_port() {
 fn empty_route_table() {
     let router = make_router(vec![]);
     assert!(
-        router.match_route("/anything", None, &HeaderMap::new(), None).is_none(),
+        router.match_route("/anything", None, &HeaderMap::new(), None, None).is_none(),
         "empty route table should match nothing"
     );
 }
@@ -604,7 +604,7 @@ fn route_with_host_and_headers() {
 
     let mut hdrs = HeaderMap::new();
     hdrs.insert("x-version", HeaderValue::from_static("v2"));
-    let route = router.match_route("/", Some("api.example.com"), &hdrs, None).unwrap();
+    let route = router.match_route("/", Some("api.example.com"), &hdrs, None, None).unwrap();
     assert_eq!(
         &*route.cluster, "api-v2",
         "route with both host and headers should match"
@@ -645,7 +645,7 @@ fn same_prefix_same_constraints_first_wins() {
     let mut hdrs = HeaderMap::new();
     hdrs.insert("x-a", HeaderValue::from_static("1"));
     hdrs.insert("x-b", HeaderValue::from_static("2"));
-    let route = router.match_route("/", None, &hdrs, None).unwrap();
+    let route = router.match_route("/", None, &hdrs, None, None).unwrap();
     assert_eq!(
         &*route.cluster, "first",
         "equal-constraint routes should prefer first match"
@@ -668,7 +668,7 @@ fn empty_headers_map_matches_everything() {
     ..Default::default()
     }]);
 
-    let route = router.match_route("/test", None, &HeaderMap::new(), None).unwrap();
+    let route = router.match_route("/test", None, &HeaderMap::new(), None, None).unwrap();
     assert_eq!(&*route.cluster, "vacuous", "empty headers map should match everything");
 }
 
@@ -723,7 +723,7 @@ fn route_matches_request_path_only_hit() {
         wildcard_suffix: None,
     };
     assert!(
-        route_matches_request(&resolved, "/api/users", None, &HeaderMap::new(), None),
+        route_matches_request(&resolved, "/api/users", None, &HeaderMap::new(), None, None),
         "path-only route should match when prefix matches"
     );
 }
@@ -748,7 +748,7 @@ fn route_matches_request_path_miss() {
         wildcard_suffix: None,
     };
     assert!(
-        !route_matches_request(&resolved, "/other", None, &HeaderMap::new(), None),
+        !route_matches_request(&resolved, "/other", None, &HeaderMap::new(), None, None),
         "path-only route should not match when prefix differs"
     );
 }
@@ -773,7 +773,7 @@ fn route_matches_request_host_hit() {
         wildcard_suffix: None,
     };
     assert!(
-        route_matches_request(&resolved, "/", Some("example.com"), &HeaderMap::new(), None),
+        route_matches_request(&resolved, "/", Some("example.com"), &HeaderMap::new(), None, None),
         "host-constrained route should match when host is equal"
     );
 }
@@ -798,7 +798,7 @@ fn route_matches_request_host_miss() {
         wildcard_suffix: None,
     };
     assert!(
-        !route_matches_request(&resolved, "/", Some("other.com"), &HeaderMap::new(), None),
+        !route_matches_request(&resolved, "/", Some("other.com"), &HeaderMap::new(), None, None),
         "host-constrained route should not match when host differs"
     );
 }
@@ -823,7 +823,7 @@ fn route_matches_request_host_miss_when_no_host() {
         wildcard_suffix: None,
     };
     assert!(
-        !route_matches_request(&resolved, "/", None, &HeaderMap::new(), None),
+        !route_matches_request(&resolved, "/", None, &HeaderMap::new(), None, None),
         "host-constrained route should not match when no host is provided"
     );
 }
@@ -850,7 +850,7 @@ fn route_matches_request_header_hit() {
     let mut hdrs = HeaderMap::new();
     hdrs.insert("x-key", HeaderValue::from_static("val"));
     assert!(
-        route_matches_request(&resolved, "/", None, &hdrs, None),
+        route_matches_request(&resolved, "/", None, &hdrs, None, None),
         "header-constrained route should match when header is present"
     );
 }
@@ -877,7 +877,7 @@ fn route_matches_request_header_miss() {
     let mut hdrs = HeaderMap::new();
     hdrs.insert("x-key", HeaderValue::from_static("wrong"));
     assert!(
-        !route_matches_request(&resolved, "/", None, &hdrs, None),
+        !route_matches_request(&resolved, "/", None, &hdrs, None, None),
         "header-constrained route should not match when header value differs"
     );
 }
@@ -904,15 +904,15 @@ fn route_matches_request_compound() {
     let mut hdrs = HeaderMap::new();
     hdrs.insert("x-ver", HeaderValue::from_static("2"));
     assert!(
-        route_matches_request(&resolved, "/api/data", Some("example.com"), &hdrs, None),
+        route_matches_request(&resolved, "/api/data", Some("example.com"), &hdrs, None, None),
         "compound route should match when path, host, and header all match"
     );
     assert!(
-        !route_matches_request(&resolved, "/api/data", Some("other.com"), &hdrs, None),
+        !route_matches_request(&resolved, "/api/data", Some("other.com"), &hdrs, None, None),
         "compound route should fail when host mismatches"
     );
     assert!(
-        !route_matches_request(&resolved, "/other", Some("example.com"), &hdrs, None),
+        !route_matches_request(&resolved, "/other", Some("example.com"), &hdrs, None, None),
         "compound route should fail when path mismatches"
     );
 }
@@ -1131,10 +1131,10 @@ fn path_prefix_without_trailing_slash_is_allowed() {
     ..Default::default()
     }])
     .expect("Gateway-aligned prefix should not require trailing slash");
-    let route = router.match_route("/api/users", None, &HeaderMap::new(), None).unwrap();
+    let route = router.match_route("/api/users", None, &HeaderMap::new(), None, None).unwrap();
     assert_eq!(&*route.cluster, "api");
     assert!(
-        router.match_route("/apikeys", None, &HeaderMap::new(), None).is_none(),
+        router.match_route("/apikeys", None, &HeaderMap::new(), None, None).is_none(),
         "segment boundary: /api must not match /apikeys"
     );
 }
@@ -1155,13 +1155,13 @@ fn path_prefix_exact_segment_matches_without_extra_slash() {
     ..Default::default()
     }]);
     for path in ["/test", "/test/", "/test/x"] {
-        let route = router.match_route(path, None, &HeaderMap::new(), None).unwrap_or_else(|| {
+        let route = router.match_route(path, None, &HeaderMap::new(), None, None).unwrap_or_else(|| {
             panic!("prefix /test should match path {path:?}");
         });
         assert_eq!(&*route.cluster, "t", "path {path:?}");
     }
     assert!(
-        router.match_route("/testing", None, &HeaderMap::new(), None).is_none(),
+        router.match_route("/testing", None, &HeaderMap::new(), None, None).is_none(),
         "/test must not match /testing"
     );
 }
@@ -1183,7 +1183,7 @@ fn wildcard_host_matches_subdomain() {
     }]);
 
     let route = router
-        .match_route("/", Some("api.example.com"), &HeaderMap::new(), None)
+        .match_route("/", Some("api.example.com"), &HeaderMap::new(), None, None)
         .unwrap();
     assert_eq!(
         &*route.cluster, "wildcard",
@@ -1209,7 +1209,7 @@ fn wildcard_host_does_not_match_bare_domain() {
 
     assert!(
         router
-            .match_route("/", Some("example.com"), &HeaderMap::new(), None)
+            .match_route("/", Some("example.com"), &HeaderMap::new(), None, None)
             .is_none(),
         "*.example.com should not match bare example.com"
     );
@@ -1233,7 +1233,7 @@ fn wildcard_host_matches_multi_level_subdomain_gateway_semantics() {
 
     assert!(
         router
-            .match_route("/", Some("a.b.example.com"), &HeaderMap::new(), None)
+            .match_route("/", Some("a.b.example.com"), &HeaderMap::new(), None, None)
             .is_some(),
         "Gateway API: *.example.com matches foo.example.com and foo.bar.example.com"
     );
@@ -1256,7 +1256,7 @@ fn wildcard_host_with_port() {
     }]);
 
     let route = router
-        .match_route("/", Some("www.example.com:8080"), &HeaderMap::new(), None)
+        .match_route("/", Some("www.example.com:8080"), &HeaderMap::new(), None, None)
         .unwrap();
     assert_eq!(
         &*route.cluster, "wildcard",
@@ -1281,7 +1281,7 @@ fn wildcard_host_case_insensitive() {
     }]);
 
     let route = router
-        .match_route("/", Some("API.example.com"), &HeaderMap::new(), None)
+        .match_route("/", Some("API.example.com"), &HeaderMap::new(), None, None)
         .unwrap();
     assert_eq!(
         &*route.cluster, "wildcard",
@@ -1321,14 +1321,14 @@ fn wildcard_host_with_fallback() {
     ]);
 
     let route = router
-        .match_route("/", Some("api.example.com"), &HeaderMap::new(), None)
+        .match_route("/", Some("api.example.com"), &HeaderMap::new(), None, None)
         .unwrap();
     assert_eq!(
         &*route.cluster, "wildcard",
         "wildcard route should match api.example.com"
     );
 
-    let route = router.match_route("/", Some("other.dev"), &HeaderMap::new(), None).unwrap();
+    let route = router.match_route("/", Some("other.dev"), &HeaderMap::new(), None, None).unwrap();
     assert_eq!(
         &*route.cluster, "default",
         "non-matching host should fall back to default"
@@ -1367,7 +1367,7 @@ fn exact_host_wins_over_wildcard_same_constraints() {
     ]);
 
     let route = router
-        .match_route("/", Some("api.example.com"), &HeaderMap::new(), None)
+        .match_route("/", Some("api.example.com"), &HeaderMap::new(), None, None)
         .unwrap();
     assert_eq!(
         &*route.cluster, "exact",
@@ -1393,7 +1393,7 @@ fn wildcard_host_does_not_match_empty_subdomain() {
 
     assert!(
         router
-            .match_route("/", Some(".example.com"), &HeaderMap::new(), None)
+            .match_route("/", Some(".example.com"), &HeaderMap::new(), None, None)
             .is_none(),
         "*.example.com should not match .example.com (empty subdomain)"
     );

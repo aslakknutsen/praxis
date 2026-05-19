@@ -190,6 +190,7 @@ impl ProxyHttp for PingoraHttpHandler {
         let is_upgrade = session.is_upgrade_req();
         upstream_request::strip_hop_by_hop(upstream_request, is_upgrade);
         upstream_request::apply_rewritten_path(upstream_request, ctx)?;
+        upstream_request::apply_rewritten_host(upstream_request, ctx);
         via::append_request_via(upstream_request, http::Version::HTTP_11);
         Ok(())
     }

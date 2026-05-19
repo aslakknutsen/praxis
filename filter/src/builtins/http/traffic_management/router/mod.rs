@@ -204,12 +204,13 @@ impl RouterFilter {
         host: Option<&str>,
         req_headers: &HeaderMap,
         method: Option<&str>,
+        query: Option<&str>,
     ) -> Option<&Route> {
         let mut best: Option<(usize, usize, &Route)> = None;
 
         for resolved in &self.routes {
             let route = &resolved.route;
-            if !route_matches_request(resolved, path, host, req_headers, method) {
+            if !route_matches_request(resolved, path, host, req_headers, method, query) {
                 continue;
             }
             best = update_best_match(best, route);
@@ -229,17 +230,19 @@ impl HttpFilter for RouterFilter {
     }
 
     async fn on_request(&self, ctx: &mut HttpFilterContext<'_>) -> Result<FilterAction, FilterError> {
-        let path = ctx.rewritten_path.as_deref().unwrap_or_else(|| ctx.request.uri.path());
+        let path = ctx.rewritten_path.as_deref().unwrap_or_else(|| ctx.request.uri.path()).to_owned();
         let host = ctx
             .request
             .headers
             .get("host")
             .and_then(|v| v.to_str().ok())
-            .or_else(|| ctx.request.uri.authority().map(http::uri::Authority::as_str));
-        let method = ctx.request.method.as_str();
+            .or_else(|| ctx.request.uri.authority().map(http::uri::Authority::as_str))
+            .map(str::to_owned);
+        let method = ctx.request.method.as_str().to_owned();
 
-        trace!(path = %path, host = host.unwrap_or(""), method = %method, "matching route");
-        if let Some(route) = self.match_route(path, host, &ctx.request.headers, Some(method)) {
+        let query = ctx.request.uri.query().map(str::to_owned);
+        trace!(path = %path, host = host.as_deref().unwrap_or(""), method = %method, "matching route");
+        if let Some(route) = self.match_route(&path, host.as_deref(), &ctx.request.headers, Some(&method), query.as_deref()) {
             if route.invalid_backend_ref {
                 if route.grpc_route {
                     return Ok(FilterAction::Reject(grpc_unimplemented()));
@@ -248,7 +251,19 @@ impl HttpFilter for RouterFilter {
             }
             if let Some(redir) = &route.redirect {
                 let uri = &ctx.request.uri;
-                let location = expand_redirect_location(&redir.location, uri.path(), uri.query());
+                let req_scheme = uri.scheme_str().unwrap_or("http");
+                let req_host = ctx.request.headers.get("host")
+                    .and_then(|v| v.to_str().ok())
+                    .or_else(|| uri.authority().map(http::uri::Authority::as_str))
+                    .unwrap_or("");
+                let raw_location = redir.location
+                    .replace("${scheme}", req_scheme)
+                    .replace("${host}", req_host);
+                let req_path = uri.path();
+                let path_suffix = req_path.strip_prefix(route.path_prefix.as_str())
+                    .unwrap_or("");
+                let raw_location = raw_location.replace("${path_suffix}", path_suffix);
+                let location = expand_redirect_location(&raw_location, req_path, uri.query());
                 let rejection = Rejection::status(redir.status).with_header("Location", &location);
                 return Ok(FilterAction::Reject(rejection));
             }
@@ -263,6 +278,26 @@ impl HttpFilter for RouterFilter {
             }
             if let Some(ref m) = route.response_header_modifier {
                 ctx.response_header_modifier = Some(m.clone());
+            }
+            if let Some(ref host) = route.url_rewrite_hostname {
+                ctx.rewritten_host = Some(host.clone());
+            }
+            if let Some(ref full_path) = route.url_rewrite_path_full {
+                ctx.rewritten_path = Some(full_path.clone());
+            } else if let Some(ref prefix) = route.url_rewrite_path_prefix {
+                let original = ctx.rewritten_path.as_deref().unwrap_or(&path);
+                let matched_prefix = &route.path_prefix;
+                if let Some(suffix) = original.strip_prefix(matched_prefix.as_str()) {
+                    ctx.rewritten_path = Some(format!("{prefix}{suffix}"));
+                } else if original == matched_prefix.trim_end_matches('/') {
+                    ctx.rewritten_path = Some(prefix.clone());
+                }
+            }
+            if route.request_timeout_ms > 0 {
+                ctx.request_deadline = Some(
+                    std::time::Instant::now()
+                        + std::time::Duration::from_millis(route.request_timeout_ms),
+                );
             }
             Ok(FilterAction::Continue)
         } else {

@@ -264,6 +264,15 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
             .as_ref()
             .and_then(proto_http_request_header_modifier);
 
+        let (uw_hostname, uw_path_full, uw_path_prefix) = match &gw_route.url_rewrite {
+            Some(uw) => (
+                if uw.hostname.is_empty() { None } else { Some(uw.hostname.clone()) },
+                if uw.path_replace_full.is_empty() { None } else { Some(uw.path_replace_full.clone()) },
+                if uw.path_replace_prefix.is_empty() { None } else { Some(uw.path_replace_prefix.clone()) },
+            ),
+            None => (None, None, None),
+        };
+
         let invalid_backend_ref = gw_route.invalid_backend_ref;
         let is_grpc_route = gw_route.grpc_route;
 
@@ -338,6 +347,19 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
             });
             seen_clusters.insert(cluster_name.clone(), ());
         }
+        let extras = RouteExtras {
+            redirect: redirect_cfg,
+            request_header_modifier: hdr_modifier,
+            response_header_modifier: resp_hdr_modifier,
+            url_rewrite_hostname: uw_hostname,
+            url_rewrite_path_full: uw_path_full,
+            url_rewrite_path_prefix: uw_path_prefix,
+            request_timeout_ms: gw_route.request_timeout_ms,
+            backend_timeout_ms: gw_route.backend_timeout_ms,
+            invalid_backend_ref,
+            grpc_route: is_grpc_route,
+        };
+
         let match_routes: Vec<Route> = if gw_route.matches.is_empty() {
             hostnames
                 .iter()
@@ -348,9 +370,15 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
                     methods: if is_grpc_route { Some(vec!["POST".to_owned()]) } else { None },
                     host: host.clone(),
                     headers: None,
-                    redirect: redirect_cfg.clone(),
-                    request_header_modifier: hdr_modifier.clone(),
-                    response_header_modifier: resp_hdr_modifier.clone(),
+                    query_params: None,
+                    redirect: extras.redirect.clone(),
+                    request_header_modifier: extras.request_header_modifier.clone(),
+                    response_header_modifier: extras.response_header_modifier.clone(),
+                    url_rewrite_hostname: extras.url_rewrite_hostname.clone(),
+                    url_rewrite_path_full: extras.url_rewrite_path_full.clone(),
+                    url_rewrite_path_prefix: extras.url_rewrite_path_prefix.clone(),
+                    request_timeout_ms: extras.request_timeout_ms,
+                    backend_timeout_ms: extras.backend_timeout_ms,
                     invalid_backend_ref,
                     grpc_route: is_grpc_route,
                     cluster: Arc::from(cluster_name.as_str()),
@@ -365,11 +393,7 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
                         m,
                         &cluster_name,
                         &hostnames,
-                        redirect_cfg.clone(),
-                        hdr_modifier.clone(),
-                        resp_hdr_modifier.clone(),
-                        invalid_backend_ref,
-                        is_grpc_route,
+                        &extras,
                     )
                 })
                 .collect()
@@ -407,20 +431,47 @@ fn proto_http_request_header_modifier(p: &ProtoRequestHeaderModifier) -> Option<
 }
 
 fn proto_redirect_to_action(r: &ProtoRequestRedirect) -> Option<RedirectAction> {
-    if r.hostname.is_empty() {
+    let has_hostname = !r.hostname.is_empty();
+    let has_scheme = !r.scheme.is_empty();
+    let has_path = !r.path.is_empty();
+    let has_prefix_path = !r.prefix_path.is_empty();
+    let has_port = r.port != 0;
+    let has_status = r.status_code != 0;
+
+    if !has_hostname && !has_scheme && !has_path && !has_prefix_path && !has_port && !has_status {
         return None;
     }
-    let scheme = if r.scheme.is_empty() { "http" } else { r.scheme.as_str() };
-    let mut location = format!("{scheme}://{}", r.hostname);
-    if r.port != 0 {
+
+    let mut location = String::new();
+    if has_scheme || has_hostname {
+        let scheme = if has_scheme { r.scheme.as_str() } else { "${scheme}" };
+        let host = if has_hostname { r.hostname.as_str() } else { "${host}" };
+        location.push_str(&format!("{scheme}://{host}"));
+    }
+    if has_port {
+        if location.is_empty() {
+            location.push_str("${scheme}://${host}");
+        }
         location.push(':');
         location.push_str(&r.port.to_string());
     }
-    location.push_str("${path}${query}");
-    let status = if r.status_code == 0 {
-        302
+    if location.is_empty() {
+        location.push_str("${scheme}://${host}");
+    }
+    if has_path {
+        location.push_str(&r.path);
+    } else if has_prefix_path {
+        location.push_str(&r.prefix_path);
+        location.push_str("${path_suffix}");
     } else {
+        location.push_str("${path}");
+    }
+    location.push_str("${query}");
+
+    let status = if has_status {
         u16::try_from(r.status_code).ok()?
+    } else {
+        302
     };
     Some(RedirectAction { status, location })
 }
@@ -538,18 +589,28 @@ fn backend_cluster_name(backend: &Backend, route_key: &str) -> String {
     format!("{}:{}", backend_upstream_host(backend, route_key), backend_socket_port(backend))
 }
 
+struct RouteExtras {
+    redirect: Option<RedirectAction>,
+    request_header_modifier: Option<RequestHeaderModifier>,
+    response_header_modifier: Option<RequestHeaderModifier>,
+    url_rewrite_hostname: Option<String>,
+    url_rewrite_path_full: Option<String>,
+    url_rewrite_path_prefix: Option<String>,
+    request_timeout_ms: u64,
+    backend_timeout_ms: u64,
+    invalid_backend_ref: bool,
+    grpc_route: bool,
+}
+
 fn expand_route_match(
     m: &super::proto::RouteMatch,
     cluster_name: &str,
     hostnames: &[Option<String>],
-    redirect: Option<RedirectAction>,
-    request_header_modifier: Option<RequestHeaderModifier>,
-    response_header_modifier: Option<RequestHeaderModifier>,
-    invalid_backend_ref: bool,
-    grpc_route: bool,
+    extras: &RouteExtras,
 ) -> Vec<Route> {
-    let (path_prefix, path_exact, path_regex, methods) = resolve_grpc_or_http_match(m, grpc_route);
+    let (path_prefix, path_exact, path_regex, methods) = resolve_grpc_or_http_match(m, extras.grpc_route);
     let headers = if m.headers.is_empty() { None } else { Some(m.headers.clone()) };
+    let query_params = if m.query_params.is_empty() { None } else { Some(m.query_params.clone()) };
 
     hostnames
         .iter()
@@ -560,11 +621,17 @@ fn expand_route_match(
             methods: methods.clone(),
             host: host.clone(),
             headers: headers.clone(),
-            redirect: redirect.clone(),
-            request_header_modifier: request_header_modifier.clone(),
-            response_header_modifier: response_header_modifier.clone(),
-            invalid_backend_ref,
-            grpc_route,
+            query_params: query_params.clone(),
+            redirect: extras.redirect.clone(),
+            request_header_modifier: extras.request_header_modifier.clone(),
+            response_header_modifier: extras.response_header_modifier.clone(),
+            url_rewrite_hostname: extras.url_rewrite_hostname.clone(),
+            url_rewrite_path_full: extras.url_rewrite_path_full.clone(),
+            url_rewrite_path_prefix: extras.url_rewrite_path_prefix.clone(),
+            request_timeout_ms: extras.request_timeout_ms,
+            backend_timeout_ms: extras.backend_timeout_ms,
+            invalid_backend_ref: extras.invalid_backend_ref,
+            grpc_route: extras.grpc_route,
             cluster: Arc::from(cluster_name),
         })
         .collect()
@@ -631,9 +698,13 @@ fn normalize_prefix(prefix: &str) -> String {
 // -----------------------------------------------------------------------------
 
 fn build_filter_chain(name: String, routes: Vec<Route>, gw_routes: &[GwRoute]) -> FilterChainConfig {
-    let router_entry = build_router_entry(routes);
-    let lb_entry = build_lb_entry(gw_routes);
-    FilterChainConfig { name, filters: vec![router_entry, lb_entry] }
+    let mut filters = Vec::new();
+    if let Some(cors_entry) = build_cors_entry(gw_routes) {
+        filters.push(cors_entry);
+    }
+    filters.push(build_router_entry(routes));
+    filters.push(build_lb_entry(gw_routes));
+    FilterChainConfig { name, filters }
 }
 
 /// Build an `sni_router` filter chain for TLS passthrough listeners.
@@ -734,6 +805,46 @@ fn build_router_entry(routes: Vec<Route>) -> FilterEntry {
         failure_mode: FailureMode::Closed,
         name: None,
     }
+}
+
+fn build_cors_entry(gw_routes: &[GwRoute]) -> Option<FilterEntry> {
+    let cors = gw_routes.iter().find_map(|r| r.cors.as_ref())?;
+    let mut config_map = serde_yaml::Mapping::new();
+    config_map.insert(
+        k("allow_origins"),
+        YamlValue::Sequence(cors.allow_origins.iter().map(|s| YamlValue::String(s.clone())).collect()),
+    );
+    if !cors.allow_methods.is_empty() {
+        config_map.insert(
+            k("allow_methods"),
+            YamlValue::Sequence(cors.allow_methods.iter().map(|s| YamlValue::String(s.clone())).collect()),
+        );
+    }
+    if !cors.allow_headers.is_empty() {
+        config_map.insert(
+            k("allow_headers"),
+            YamlValue::Sequence(cors.allow_headers.iter().map(|s| YamlValue::String(s.clone())).collect()),
+        );
+    }
+    if !cors.expose_headers.is_empty() {
+        config_map.insert(
+            k("expose_headers"),
+            YamlValue::Sequence(cors.expose_headers.iter().map(|s| YamlValue::String(s.clone())).collect()),
+        );
+    }
+    config_map.insert(k("max_age"), YamlValue::Number(serde_yaml::Number::from(cors.max_age)));
+    if cors.allow_credentials {
+        config_map.insert(k("allow_credentials"), YamlValue::Bool(true));
+    }
+    Some(FilterEntry {
+        filter_type: "cors".to_owned(),
+        config: YamlValue::Mapping(config_map),
+        branch_chains: None,
+        conditions: Vec::new(),
+        response_conditions: Vec::new(),
+        failure_mode: FailureMode::Closed,
+        name: None,
+    })
 }
 
 fn build_lb_entry(gw_routes: &[GwRoute]) -> FilterEntry {

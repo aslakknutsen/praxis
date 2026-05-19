@@ -43,6 +43,7 @@ pub(super) fn route_matches_request(
     host: Option<&str>,
     req_headers: &HeaderMap,
     method: Option<&str>,
+    query: Option<&str>,
 ) -> bool {
     let route = &resolved.route;
 
@@ -74,7 +75,27 @@ pub(super) fn route_matches_request(
         }),
         None => true,
     };
-    host_ok && headers_match(&route.headers, req_headers)
+    host_ok && headers_match(&route.headers, req_headers) && query_params_match(&route.query_params, query)
+}
+
+fn query_params_match(expected: &Option<HashMap<String, String>>, query: Option<&str>) -> bool {
+    let Some(expected) = expected else {
+        return true;
+    };
+    if expected.is_empty() {
+        return true;
+    }
+    let query = query.unwrap_or("");
+    for (name, value) in expected {
+        let found = query
+            .split('&')
+            .filter_map(|pair| pair.split_once('='))
+            .any(|(k, v)| k == name && v == value);
+        if !found {
+            return false;
+        }
+    }
+    true
 }
 
 /// Update the best match if the current route has more constraints.
@@ -85,7 +106,8 @@ pub(super) fn update_best_match<'a>(
     let specificity = path_specificity(route);
     let constraints = usize::from(route.host.is_some())
         + route.headers.as_ref().map_or(0, HashMap::len)
-        + usize::from(route.methods.as_ref().is_some_and(|m| !m.is_empty()));
+        + usize::from(route.methods.as_ref().is_some_and(|m| !m.is_empty()))
+        + route.query_params.as_ref().map_or(0, HashMap::len);
     let dominated = best.is_some_and(|(bp, bc, _)| (specificity, constraints) <= (bp, bc));
     if dominated {
         best

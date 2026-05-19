@@ -134,6 +134,28 @@ message RequestRedirect {
   uint32 port = 3;
   string scheme = 4;
   uint32 status_code = 5;
+  // When non-empty, path is a ReplaceFullPath; when empty with prefix_path
+  // non-empty, that is a ReplacePrefixMatch.
+  string prefix_path = 6;
+}
+
+// URLRewrite mirrors Gateway API HTTPURLRewriteFilter.
+message URLRewrite {
+  string hostname = 1;
+  // Full path replacement (ReplaceFullPath).
+  string path_replace_full = 2;
+  // Prefix replacement (ReplacePrefixMatch).
+  string path_replace_prefix = 3;
+}
+
+// CorsFilter mirrors Gateway API CORS inline filter.
+message CorsFilter {
+  repeated string allow_origins = 1;
+  repeated string allow_methods = 2;
+  repeated string allow_headers = 3;
+  repeated string expose_headers = 4;
+  uint32 max_age = 5;
+  bool allow_credentials = 6;
 }
 
 // Named header value (Gateway HTTPHeader).
@@ -160,6 +182,8 @@ message RouteMatch {
   // GRPCRoute (Gateway API); empty = wildcard.
   string grpc_service = 6;
   string grpc_method = 7;
+  // Exact query-parameter matches (Gateway API HTTPRouteMatch).
+  map<string, string> query_params = 8;
 }
 
 // Route is a resolved route rule attached to a listener.
@@ -190,6 +214,14 @@ message Route {
   bool tcp_route = 12;
   // True when this rule came from a UDPRoute (L4 routing on UDP listeners).
   bool udp_route = 13;
+  // URL rewrite filter (Gateway HTTPURLRewriteFilter).
+  URLRewrite url_rewrite = 14;
+  // Request-level timeout in milliseconds (Gateway API HTTPRouteTimeouts.request).
+  uint64 request_timeout_ms = 15;
+  // Backend-level timeout in milliseconds (Gateway API HTTPRouteTimeouts.backendRequest).
+  uint64 backend_timeout_ms = 16;
+  // CORS filter (Gateway API CORS inline filter).
+  CorsFilter cors = 17;
 }
 
 // Resource is the top-level xDS resource served to a gwxds-capable proxy.

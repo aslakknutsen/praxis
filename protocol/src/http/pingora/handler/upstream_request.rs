@@ -108,6 +108,17 @@ pub(crate) fn apply_rewritten_path(req: &mut RequestHeader, ctx: &mut PingoraReq
     Ok(())
 }
 
+/// Apply a rewritten Host header from URLRewrite hostname to the upstream request.
+pub(crate) fn apply_rewritten_host(req: &mut RequestHeader, ctx: &mut PingoraRequestCtx) {
+    let Some(new_host) = ctx.rewritten_host.take() else {
+        return;
+    };
+    if let Ok(val) = new_host.parse::<http::HeaderValue>() {
+        req.insert_header("host", &val).ok();
+        debug!(rewritten_host = %new_host, "applying host rewrite to upstream request");
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------

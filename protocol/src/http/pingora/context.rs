@@ -132,6 +132,9 @@ pub struct PingoraRequestCtx {
     /// [`HttpFilterContext`]: praxis_filter::HttpFilterContext
     pub rewritten_path: Option<String>,
 
+    /// Rewritten Host header for the upstream request (Gateway API URLRewrite hostname).
+    pub rewritten_host: Option<String>,
+
     /// Upstream endpoint selected by the load balancer filter.
     pub upstream: Option<Upstream>,
 
@@ -169,7 +172,9 @@ macro_rules! filter_context {
             response_header: $response_header,
             response_header_modifier: $ctx.response_header_modifier.take(),
             response_headers_modified: false,
+            request_deadline: None,
             rewritten_path: $ctx.rewritten_path.take(),
+            rewritten_host: $ctx.rewritten_host.take(),
             selected_endpoint_index: $ctx.selected_endpoint_index,
             upstream: $ctx.upstream.take(),
         }
@@ -270,6 +275,7 @@ impl Default for PingoraRequestCtx {
             response_header_modifier: None,
             retries: 0,
             rewritten_path: None,
+            rewritten_host: None,
             selected_endpoint_index: None,
             upstream: None,
             upstream_for_retry: None,

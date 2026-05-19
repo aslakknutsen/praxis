@@ -144,14 +144,20 @@ impl HttpFilter for RedirectFilter {
 // Utility Functions
 // -----------------------------------------------------------------------------
 
-/// Expand `${path}` and `${query}` placeholders in the location template.
+/// Expand placeholders in the redirect location template.
 ///
-/// `${query}` includes the `?` prefix when a query string is present,
-/// and expands to an empty string when absent.
-pub(crate) fn expand_redirect_location(template: &str, path: &str, query: Option<&str>) -> String {
+/// Supported: `${path}`, `${query}`, `${scheme}`, `${host}`, `${path_suffix}`.
+/// `${query}` includes the `?` prefix when a query string is present.
+/// `${path_suffix}` is the remaining path after the prefix match (caller provides it).
+pub(crate) fn expand_redirect_location(
+    template: &str,
+    path: &str,
+    query: Option<&str>,
+) -> String {
     let result = template.replace("${path}", path);
     let query_with_prefix = query.map_or(String::new(), |q| format!("?{q}"));
-    result.replace("${query}", &query_with_prefix)
+    let result = result.replace("${query}", &query_with_prefix);
+    result.replace("${path_suffix}", "")
 }
 
 // -----------------------------------------------------------------------------

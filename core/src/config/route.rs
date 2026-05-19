@@ -69,6 +69,11 @@ pub struct Route {
     #[serde(default)]
     pub headers: Option<HashMap<String, String>>,
 
+    /// Query parameters to match. All specified params must be present
+    /// with matching values (AND semantics, case-sensitive).
+    #[serde(default)]
+    pub query_params: Option<HashMap<String, String>>,
+
     /// When set, respond with this redirect instead of forwarding to [`cluster`].
     #[serde(default)]
     pub redirect: Option<RedirectAction>,
@@ -80,6 +85,26 @@ pub struct Route {
     /// Response header changes after this route matches (GRPCRoute ResponseHeaderModifier).
     #[serde(default)]
     pub response_header_modifier: Option<RequestHeaderModifier>,
+
+    /// URL rewrite: replace hostname (Host header) on upstream request.
+    #[serde(default)]
+    pub url_rewrite_hostname: Option<String>,
+
+    /// URL rewrite: replace the entire path.
+    #[serde(default)]
+    pub url_rewrite_path_full: Option<String>,
+
+    /// URL rewrite: replace the matched prefix portion of the path.
+    #[serde(default)]
+    pub url_rewrite_path_prefix: Option<String>,
+
+    /// Request-level timeout in milliseconds (0 = disabled).
+    #[serde(default)]
+    pub request_timeout_ms: u64,
+
+    /// Backend request timeout in milliseconds (0 = disabled).
+    #[serde(default)]
+    pub backend_timeout_ms: u64,
 
     /// When true, backend refs did not resolve — reject with HTTP 500 (Gateway conformance).
     #[serde(default)]

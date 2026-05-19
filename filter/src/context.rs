@@ -116,6 +116,11 @@ pub struct HttpFilterContext<'a> {
     /// Applied during the response phase in the protocol handler.
     pub response_header_modifier: Option<RequestHeaderModifier>,
 
+    /// Request-level deadline (absolute wall-clock time). Set by the router from
+    /// Gateway API `timeouts.request`. The protocol handler should abort the
+    /// transaction if this instant passes before a response is received.
+    pub request_deadline: Option<Instant>,
+
     /// Rewritten URI path for the upstream request.
     ///
     /// Set by the `path_rewrite` or `url_rewrite` filter during
@@ -132,6 +137,10 @@ pub struct HttpFilterContext<'a> {
     /// `allow_rewrite_override: true` on the later filter to
     /// permit it. Or, better yet, don't.
     pub rewritten_path: Option<String>,
+
+    /// Rewritten Host header for the upstream request (Gateway API URLRewrite hostname).
+    /// Applied to the upstream request in the protocol layer alongside `rewritten_path`.
+    pub rewritten_host: Option<String>,
 
     /// The upstream peer selected by the load balancer filter.
     pub upstream: Option<Upstream>,

@@ -206,6 +206,7 @@ async fn run_pipeline(
         cluster,
         upstream,
         rewritten_path,
+        rewritten_host,
         request_body_mode,
         selected_endpoint_index,
         response_header_modifier,
@@ -220,6 +221,7 @@ async fn run_pipeline(
             filter_ctx.cluster,
             filter_ctx.upstream,
             filter_ctx.rewritten_path,
+            filter_ctx.rewritten_host,
             filter_ctx.request_body_mode,
             filter_ctx.selected_endpoint_index,
             filter_ctx.response_header_modifier,
@@ -236,6 +238,7 @@ async fn run_pipeline(
             ctx.cluster = cluster;
             ctx.upstream = upstream;
             ctx.rewritten_path = rewritten_path;
+            ctx.rewritten_host = rewritten_host;
             ctx.request_body_mode = request_body_mode;
             ctx.selected_endpoint_index = selected_endpoint_index;
             ctx.response_header_modifier = response_header_modifier;
