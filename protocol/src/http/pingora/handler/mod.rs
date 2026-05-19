@@ -199,6 +199,51 @@ fn handle_connect_failure(ctx: &mut PingoraRequestCtx, e: Box<pingora_core::Erro
     e
 }
 
+/// Gateway API route-level timeouts (`request_timeout_ms`) must produce HTTP 504
+/// per the spec.  Pingora's default `fail_to_proxy` maps all upstream errors
+/// (including `ReadTimedout`) to 502. This override checks whether a route-level
+/// deadline was active and upgrades the status to 504 when appropriate.
+async fn fail_to_proxy_impl(
+    session: &mut Session,
+    e: &pingora_core::Error,
+    ctx: &mut PingoraRequestCtx,
+) -> pingora_proxy::FailToProxy {
+    use pingora_core::ErrorType;
+
+    let is_route_timeout = (ctx.request_deadline.is_some() || ctx.backend_timeout_ms > 0)
+        && matches!(
+            e.etype(),
+            ErrorType::ReadTimedout | ErrorType::ConnectTimedout
+        );
+
+    let code: u16 = if is_route_timeout {
+        504
+    } else {
+        match e.etype() {
+            ErrorType::HTTPStatus(code) => *code,
+            _ => match e.esource() {
+                pingora_core::ErrorSource::Upstream => 502,
+                pingora_core::ErrorSource::Downstream => match e.etype() {
+                    ErrorType::WriteError | ErrorType::ReadError | ErrorType::ConnectionClosed => 0,
+                    _ => 400,
+                },
+                pingora_core::ErrorSource::Internal | pingora_core::ErrorSource::Unset => 500,
+            },
+        }
+    };
+
+    if code > 0 {
+        if let Err(send_err) = session.respond_error(code).await {
+            tracing::error!("failed to send error response to downstream: {send_err}");
+        }
+    }
+
+    pingora_proxy::FailToProxy {
+        error_code: code,
+        can_reuse_downstream: false,
+    }
+}
+
 /// Run response filters during the logging phase if the
 /// response phase never executed (upstream error, filter
 /// rejection, etc.).

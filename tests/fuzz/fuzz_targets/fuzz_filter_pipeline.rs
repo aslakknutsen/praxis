@@ -67,6 +67,7 @@ fuzz_target!(|data: &str| {
             response_header_modifier: None,
             response_headers_modified: false,
             request_deadline: None,
+            backend_timeout_ms: 0,
             rewritten_path: None,
             rewritten_host: None,
             selected_endpoint_index: None,

@@ -121,6 +121,10 @@ pub struct HttpFilterContext<'a> {
     /// transaction if this instant passes before a response is received.
     pub request_deadline: Option<Instant>,
 
+    /// Backend request timeout in milliseconds (Gateway API `timeouts.backendRequest`).
+    /// Set by the router; applied as a per-request read timeout in the protocol handler.
+    pub backend_timeout_ms: u64,
+
     /// Rewritten URI path for the upstream request.
     ///
     /// Set by the `path_rewrite` or `url_rewrite` filter during

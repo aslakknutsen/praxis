@@ -41,15 +41,33 @@ pub(super) fn execute(ctx: &mut PingoraRequestCtx) -> Result<Box<HttpPeer>> {
 
     let mut peer = build_peer(upstream)?;
 
-    if let Some(deadline) = ctx.request_deadline {
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() {
-            return Err(pingora_core::Error::explain(
-                pingora_core::ErrorType::ReadTimedout,
-                "request timeout expired before upstream connection",
-            ));
-        }
-        peer.options.read_timeout = Some(remaining);
+    let deadline_remaining = ctx.request_deadline.map(|d| {
+        d.saturating_duration_since(std::time::Instant::now())
+    });
+
+    if deadline_remaining.is_some_and(|r| r.is_zero()) {
+        return Err(pingora_core::Error::explain(
+            pingora_core::ErrorType::ReadTimedout,
+            "request timeout expired before upstream connection",
+        ));
+    }
+
+    let backend_dur = if ctx.backend_timeout_ms > 0 {
+        Some(std::time::Duration::from_millis(ctx.backend_timeout_ms))
+    } else {
+        None
+    };
+
+    // Use the tighter of request deadline and backend timeout.
+    let effective_timeout = match (deadline_remaining, backend_dur) {
+        (Some(d), Some(b)) => Some(d.min(b)),
+        (Some(d), None) => Some(d),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    };
+
+    if let Some(timeout) = effective_timeout {
+        peer.options.read_timeout = Some(timeout);
     }
 
     Ok(peer)

@@ -52,6 +52,7 @@ pub(crate) fn make_ctx(req: &Request) -> HttpFilterContext<'_> {
         response_header_modifier: None,
         response_headers_modified: false,
         request_deadline: None,
+        backend_timeout_ms: 0,
         rewritten_path: None,
         rewritten_host: None,
         selected_endpoint_index: None,

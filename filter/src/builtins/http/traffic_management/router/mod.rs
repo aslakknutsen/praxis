@@ -267,7 +267,7 @@ impl HttpFilter for RouterFilter {
                     if is_cors_origin_allowed(origin_str, cors) {
                         debug!(origin = %origin_str, "CORS preflight allowed");
                         return Ok(FilterAction::Reject(
-                            build_cors_preflight_rejection(origin_str, cors),
+                            build_cors_preflight_rejection(origin_str, cors, &ctx.request.headers),
                         ));
                     }
                     debug!(origin = %origin_str, "CORS preflight origin disallowed");
@@ -363,6 +363,9 @@ impl HttpFilter for RouterFilter {
                         + std::time::Duration::from_millis(route.request_timeout_ms),
                 );
             }
+            if route.backend_timeout_ms > 0 {
+                ctx.backend_timeout_ms = route.backend_timeout_ms;
+            }
             Ok(FilterAction::Continue)
         } else {
             debug!(path = %path, "no route matched");
@@ -418,17 +421,42 @@ fn is_cors_origin_allowed(origin: &str, policy: &RouteCorsPolicy) -> bool {
     false
 }
 
-fn build_cors_preflight_rejection(origin: &str, policy: &RouteCorsPolicy) -> Rejection {
-    let acao = if policy.allow_origins.iter().any(|o| o == "*") && !policy.allow_credentials {
-        "*"
-    } else {
-        origin
-    };
+fn build_cors_preflight_rejection(
+    origin: &str,
+    policy: &RouteCorsPolicy,
+    request_headers: &HeaderMap,
+) -> Rejection {
+    // Always echo the specific origin (never return literal "*"). This is
+    // required for credentialed requests per the Fetch Standard, and the
+    // Gateway API conformance suite expects echoed origins throughout.
+    let acao = origin;
 
+    // CORS spec (Fetch Standard): when allowCredentials is true, wildcard
+    // values are forbidden. Echo the preflight request's specific method
+    // and headers instead.
+    let has_wildcard_methods = policy.allow_methods.iter().any(|m| m == "*");
     let methods = if policy.allow_methods.is_empty() {
         "GET, HEAD, POST".to_owned()
+    } else if has_wildcard_methods && policy.allow_credentials {
+        request_headers
+            .get("access-control-request-method")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("GET, HEAD, POST")
+            .to_owned()
     } else {
         policy.allow_methods.join(", ")
+    };
+
+    let has_wildcard_headers = policy.allow_headers.iter().any(|h| h == "*");
+    let allow_headers = if has_wildcard_headers && policy.allow_credentials {
+        request_headers
+            .get("access-control-request-headers")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned())
+    } else if !policy.allow_headers.is_empty() {
+        Some(policy.allow_headers.join(", "))
+    } else {
+        None
     };
 
     let mut r = Rejection::status(204)
@@ -440,8 +468,8 @@ fn build_cors_preflight_rejection(origin: &str, policy: &RouteCorsPolicy) -> Rej
             "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
         );
 
-    if !policy.allow_headers.is_empty() {
-        r = r.with_header("Access-Control-Allow-Headers", &policy.allow_headers.join(", "));
+    if let Some(ref hdrs) = allow_headers {
+        r = r.with_header("Access-Control-Allow-Headers", hdrs);
     }
     if !policy.expose_headers.is_empty() {
         r = r.with_header("Access-Control-Expose-Headers", &policy.expose_headers.join(", "));
@@ -453,11 +481,10 @@ fn build_cors_preflight_rejection(origin: &str, policy: &RouteCorsPolicy) -> Rej
 }
 
 fn build_cors_response_modifier(origin: &str, policy: &RouteCorsPolicy) -> RequestHeaderModifier {
-    let acao = if policy.allow_origins.iter().any(|o| o == "*") && !policy.allow_credentials {
-        "*".to_owned()
-    } else {
-        origin.to_owned()
-    };
+    // Always echo the specific origin rather than returning literal "*".
+    // Returning "*" breaks credentialed requests per the Fetch Standard, and
+    // the Gateway API conformance suite expects the echoed origin.
+    let acao = origin.to_owned();
 
     let mut set = vec![
         praxis_core::config::HeaderNameValue {

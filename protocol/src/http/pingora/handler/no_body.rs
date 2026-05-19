@@ -175,6 +175,18 @@ impl ProxyHttp for PingoraHttpHandlerNoBody {
         Ok(peer)
     }
 
+    async fn fail_to_proxy(
+        &self,
+        session: &mut Session,
+        e: &pingora_core::Error,
+        ctx: &mut Self::CTX,
+    ) -> pingora_proxy::FailToProxy
+    where
+        Self::CTX: Send + Sync,
+    {
+        super::fail_to_proxy_impl(session, e, ctx).await
+    }
+
     async fn logging(&self, _session: &mut Session, e: Option<&pingora_core::Error>, ctx: &mut Self::CTX) {
         let pipeline = self.pipeline.load();
         record_passive_health(&pipeline, e, ctx);

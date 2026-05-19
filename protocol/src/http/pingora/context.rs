@@ -126,6 +126,10 @@ pub struct PingoraRequestCtx {
     /// the read timeout on the peer connection.
     pub request_deadline: Option<Instant>,
 
+    /// Backend request timeout in milliseconds (Gateway API `timeouts.backendRequest`).
+    /// Applied as a per-request read timeout in the upstream peer hook.
+    pub backend_timeout_ms: u64,
+
     /// Response header modifier set by the router (GRPCRoute ResponseHeaderModifier).
     pub response_header_modifier: Option<praxis_core::config::RequestHeaderModifier>,
 
@@ -178,6 +182,7 @@ macro_rules! filter_context {
             response_header_modifier: $ctx.response_header_modifier.take(),
             response_headers_modified: false,
             request_deadline: None,
+            backend_timeout_ms: 0,
             rewritten_path: $ctx.rewritten_path.take(),
             rewritten_host: $ctx.rewritten_host.take(),
             selected_endpoint_index: $ctx.selected_endpoint_index,
@@ -278,6 +283,7 @@ impl Default for PingoraRequestCtx {
             upstream_response_status: None,
             response_phase_done: false,
             request_deadline: None,
+            backend_timeout_ms: 0,
             response_header_modifier: None,
             retries: 0,
             rewritten_path: None,
