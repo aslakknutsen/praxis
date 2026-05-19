@@ -35,8 +35,11 @@ pub(super) async fn execute(
     ctx.response_phase_done = true;
     ctx.upstream_response_status = Some(upstream_response.status.as_u16());
 
+    let saved_resp_hdr_mod = ctx.response_header_modifier.clone();
     let (result, _headers_modified) = run_response_pipeline(pipeline, ctx, &mut resp).await?;
-    apply_response_header_modifier(ctx, &mut resp);
+    if let Some(ref m) = saved_resp_hdr_mod {
+        apply_response_header_modifier_from(m, &mut resp);
+    }
     handle_response_result(result, upstream_response, &resp)
 }
 
@@ -129,11 +132,11 @@ fn is_websocket_101(headers: &http::HeaderMap) -> bool {
         && headers.get("sec-websocket-accept").is_some()
 }
 
-/// Apply the response header modifier from the router (GRPCRoute ResponseHeaderModifier).
-fn apply_response_header_modifier(ctx: &PingoraRequestCtx, resp: &mut praxis_filter::Response) {
-    let Some(ref m) = ctx.response_header_modifier else {
-        return;
-    };
+/// Apply a response header modifier (set/add/remove) to the response.
+fn apply_response_header_modifier_from(
+    m: &praxis_core::config::RequestHeaderModifier,
+    resp: &mut praxis_filter::Response,
+) {
     for name in &m.remove {
         if let Ok(hn) = http::header::HeaderName::from_bytes(name.as_bytes()) {
             resp.headers.remove(&hn);

@@ -121,6 +121,11 @@ pub struct PingoraRequestCtx {
     /// for passive health recording in the logging hook.
     pub selected_endpoint_index: Option<usize>,
 
+    /// Request-level deadline (absolute wall-clock time). Set by the router from
+    /// Gateway API `timeouts.request`. The upstream peer hook uses this to set
+    /// the read timeout on the peer connection.
+    pub request_deadline: Option<Instant>,
+
     /// Response header modifier set by the router (GRPCRoute ResponseHeaderModifier).
     pub response_header_modifier: Option<praxis_core::config::RequestHeaderModifier>,
 
@@ -272,6 +277,7 @@ impl Default for PingoraRequestCtx {
             response_body_released: false,
             upstream_response_status: None,
             response_phase_done: false,
+            request_deadline: None,
             response_header_modifier: None,
             retries: 0,
             rewritten_path: None,

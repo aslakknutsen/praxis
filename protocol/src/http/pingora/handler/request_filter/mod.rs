@@ -210,6 +210,7 @@ async fn run_pipeline(
         request_body_mode,
         selected_endpoint_index,
         response_header_modifier,
+        request_deadline,
         pending_ops,
     ) = {
         let mut filter_ctx = ctx.build_filter_context(pipeline, &request, None);
@@ -225,6 +226,7 @@ async fn run_pipeline(
             filter_ctx.request_body_mode,
             filter_ctx.selected_endpoint_index,
             filter_ctx.response_header_modifier,
+            filter_ctx.request_deadline,
             filter_ctx.pending_request_header_ops,
         )
     };
@@ -242,6 +244,7 @@ async fn run_pipeline(
             ctx.request_body_mode = request_body_mode;
             ctx.selected_endpoint_index = selected_endpoint_index;
             ctx.response_header_modifier = response_header_modifier;
+            ctx.request_deadline = request_deadline;
             Ok((FilterAction::Continue, extra_headers))
         },
         Ok(FilterAction::Reject(rejection)) => Ok((FilterAction::Reject(rejection), Vec::new())),

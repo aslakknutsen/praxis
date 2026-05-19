@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use http::HeaderMap;
-use praxis_core::config::{RequestHeaderModifier, Route};
+use praxis_core::config::{RequestHeaderModifier, Route, RouteCorsPolicy};
 use tracing::{debug, trace};
 
 use self::{
@@ -240,9 +240,48 @@ impl HttpFilter for RouterFilter {
             .map(str::to_owned);
         let method = ctx.request.method.as_str().to_owned();
 
+        let origin = ctx
+            .request
+            .headers
+            .get("origin")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+
+        let is_preflight = method == "OPTIONS"
+            && origin.is_some()
+            && ctx
+                .request
+                .headers
+                .contains_key("access-control-request-method");
+
+        // For preflight, match without method constraint so OPTIONS can find the target route.
+        let match_method = if is_preflight { None } else { Some(method.as_str()) };
+
         let query = ctx.request.uri.query().map(str::to_owned);
         trace!(path = %path, host = host.as_deref().unwrap_or(""), method = %method, "matching route");
-        if let Some(route) = self.match_route(&path, host.as_deref(), &ctx.request.headers, Some(&method), query.as_deref()) {
+        if let Some(route) = self.match_route(&path, host.as_deref(), &ctx.request.headers, match_method, query.as_deref()) {
+            // Handle CORS preflight: respond immediately with CORS headers.
+            if is_preflight {
+                if let Some(ref cors) = route.cors {
+                    let origin_str = origin.as_deref().unwrap_or("");
+                    if is_cors_origin_allowed(origin_str, cors) {
+                        debug!(origin = %origin_str, "CORS preflight allowed");
+                        return Ok(FilterAction::Reject(
+                            build_cors_preflight_rejection(origin_str, cors),
+                        ));
+                    }
+                    debug!(origin = %origin_str, "CORS preflight origin disallowed");
+                    return Ok(FilterAction::Reject(
+                        Rejection::status(204).with_header(
+                            "Vary",
+                            "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
+                        ),
+                    ));
+                }
+                // No CORS policy on route — fall through to normal routing (returns 404 for OPTIONS
+                // or routes to upstream if OPTIONS is allowed).
+            }
+
             if route.invalid_backend_ref {
                 if route.grpc_route {
                     return Ok(FilterAction::Reject(grpc_unimplemented()));
@@ -276,8 +315,26 @@ impl HttpFilter for RouterFilter {
             if let Some(ref m) = route.request_header_modifier {
                 enqueue_route_request_header_ops(ctx, m);
             }
-            if let Some(ref m) = route.response_header_modifier {
-                ctx.response_header_modifier = Some(m.clone());
+            // Merge per-route response header modifier with CORS response headers.
+            let cors_modifier = if let (Some(cors), Some(origin_str)) = (&route.cors, &origin) {
+                if is_cors_origin_allowed(origin_str, cors) {
+                    Some(build_cors_response_modifier(origin_str, cors))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            match (&route.response_header_modifier, cors_modifier) {
+                (Some(m), Some(cors_m)) => {
+                    let mut merged = m.clone();
+                    merged.set.extend(cors_m.set);
+                    merged.add.extend(cors_m.add);
+                    ctx.response_header_modifier = Some(merged);
+                }
+                (Some(m), None) => ctx.response_header_modifier = Some(m.clone()),
+                (None, Some(cors_m)) => ctx.response_header_modifier = Some(cors_m),
+                (None, None) => {}
             }
             if let Some(ref host) = route.url_rewrite_hostname {
                 ctx.rewritten_host = Some(host.clone());
@@ -288,9 +345,16 @@ impl HttpFilter for RouterFilter {
                 let original = ctx.rewritten_path.as_deref().unwrap_or(&path);
                 let matched_prefix = &route.path_prefix;
                 if let Some(suffix) = original.strip_prefix(matched_prefix.as_str()) {
-                    ctx.rewritten_path = Some(format!("{prefix}{suffix}"));
+                    let joined = if prefix.ends_with('/') && suffix.starts_with('/') {
+                        format!("{}{}", prefix.trim_end_matches('/'), suffix)
+                    } else if !prefix.ends_with('/') && !suffix.starts_with('/') && !suffix.is_empty() {
+                        format!("{prefix}/{suffix}")
+                    } else {
+                        format!("{prefix}{suffix}")
+                    };
+                    ctx.rewritten_path = Some(if joined.is_empty() { "/".to_owned() } else { joined });
                 } else if original == matched_prefix.trim_end_matches('/') {
-                    ctx.rewritten_path = Some(prefix.clone());
+                    ctx.rewritten_path = Some(if prefix.is_empty() { "/".to_owned() } else { prefix.clone() });
                 }
             }
             if route.request_timeout_ms > 0 {
@@ -322,4 +386,104 @@ fn grpc_unimplemented() -> Rejection {
         .with_header("content-type", "application/grpc")
         .with_header("grpc-status", "12")
         .with_header("grpc-message", "unimplemented")
+}
+
+// ---------------------------------------------------------------------------
+// Per-route CORS handling
+// ---------------------------------------------------------------------------
+
+fn is_cors_origin_allowed(origin: &str, policy: &RouteCorsPolicy) -> bool {
+    for allowed in &policy.allow_origins {
+        if allowed == "*" {
+            return true;
+        }
+        if allowed == origin {
+            return true;
+        }
+        if let Some((scheme, host)) = allowed.split_once("://") {
+            if host.starts_with("*.") {
+                let suffix = &host[1..]; // e.g. ".bar.com"
+                if let Some((o_scheme, o_rest)) = origin.split_once("://") {
+                    let o_host = o_rest.split(':').next().unwrap_or(o_rest);
+                    if o_scheme == scheme
+                        && o_host.ends_with(suffix)
+                        && o_host.len() > suffix.len()
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+fn build_cors_preflight_rejection(origin: &str, policy: &RouteCorsPolicy) -> Rejection {
+    let acao = if policy.allow_origins.iter().any(|o| o == "*") && !policy.allow_credentials {
+        "*"
+    } else {
+        origin
+    };
+
+    let methods = if policy.allow_methods.is_empty() {
+        "GET, HEAD, POST".to_owned()
+    } else {
+        policy.allow_methods.join(", ")
+    };
+
+    let mut r = Rejection::status(204)
+        .with_header("Access-Control-Allow-Origin", acao)
+        .with_header("Access-Control-Allow-Methods", &methods)
+        .with_header("Access-Control-Max-Age", &policy.max_age.to_string())
+        .with_header(
+            "Vary",
+            "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
+        );
+
+    if !policy.allow_headers.is_empty() {
+        r = r.with_header("Access-Control-Allow-Headers", &policy.allow_headers.join(", "));
+    }
+    if !policy.expose_headers.is_empty() {
+        r = r.with_header("Access-Control-Expose-Headers", &policy.expose_headers.join(", "));
+    }
+    if policy.allow_credentials {
+        r = r.with_header("Access-Control-Allow-Credentials", "true");
+    }
+    r
+}
+
+fn build_cors_response_modifier(origin: &str, policy: &RouteCorsPolicy) -> RequestHeaderModifier {
+    let acao = if policy.allow_origins.iter().any(|o| o == "*") && !policy.allow_credentials {
+        "*".to_owned()
+    } else {
+        origin.to_owned()
+    };
+
+    let mut set = vec![
+        praxis_core::config::HeaderNameValue {
+            name: "Access-Control-Allow-Origin".to_owned(),
+            value: acao,
+        },
+    ];
+    if !policy.expose_headers.is_empty() {
+        set.push(praxis_core::config::HeaderNameValue {
+            name: "Access-Control-Expose-Headers".to_owned(),
+            value: policy.expose_headers.join(", "),
+        });
+    }
+    if policy.allow_credentials {
+        set.push(praxis_core::config::HeaderNameValue {
+            name: "Access-Control-Allow-Credentials".to_owned(),
+            value: "true".to_owned(),
+        });
+    }
+    let add = vec![praxis_core::config::HeaderNameValue {
+        name: "Vary".to_owned(),
+        value: "Origin".to_owned(),
+    }];
+    RequestHeaderModifier {
+        set,
+        add,
+        remove: vec![],
+    }
 }

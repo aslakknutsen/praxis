@@ -101,18 +101,16 @@ pub(super) fn build_origin_policy(origins: &[String]) -> OriginPolicy {
 /// Check if `origin` matches any wildcard subdomain entry.
 ///
 /// Each entry is `(scheme, suffix)` where suffix is e.g.
-/// `.example.com`. Only single-level subdomains match:
-/// `https://app.example.com` matches but
-/// `https://a.b.example.com` does not.
+/// `.example.com`. Per Gateway API CORS semantics, `*.example.com`
+/// matches any depth of subdomain: `app.example.com`,
+/// `a.b.example.com`, etc. The host portion (after stripping port)
+/// must end with the suffix and have at least one character before it.
 fn match_wildcard_subdomain(origin: &str, suffixes: &[(String, String)]) -> bool {
     let Some((scheme, rest)) = origin.split_once("://") else {
         return false;
     };
+    let host = rest.split(':').next().unwrap_or(rest);
     suffixes.iter().any(|(s, suffix)| {
-        if scheme != s || !rest.ends_with(suffix.as_str()) || rest.len() <= suffix.len() {
-            return false;
-        }
-        let subdomain = &rest[..rest.len() - suffix.len()];
-        !subdomain.contains('.')
+        scheme == s && host.ends_with(suffix.as_str()) && host.len() > suffix.len()
     })
 }

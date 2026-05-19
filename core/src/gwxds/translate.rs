@@ -347,6 +347,14 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
             });
             seen_clusters.insert(cluster_name.clone(), ());
         }
+        let cors = gw_route.cors.as_ref().map(|c| crate::config::RouteCorsPolicy {
+            allow_origins: c.allow_origins.clone(),
+            allow_methods: c.allow_methods.clone(),
+            allow_headers: c.allow_headers.clone(),
+            expose_headers: c.expose_headers.clone(),
+            max_age: c.max_age,
+            allow_credentials: c.allow_credentials,
+        });
         let extras = RouteExtras {
             redirect: redirect_cfg,
             request_header_modifier: hdr_modifier,
@@ -358,6 +366,7 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
             backend_timeout_ms: gw_route.backend_timeout_ms,
             invalid_backend_ref,
             grpc_route: is_grpc_route,
+            cors,
         };
 
         let match_routes: Vec<Route> = if gw_route.matches.is_empty() {
@@ -381,6 +390,7 @@ fn build_routes_and_clusters(listener: &GwListener, resource: &Resource) -> (Vec
                     backend_timeout_ms: extras.backend_timeout_ms,
                     invalid_backend_ref,
                     grpc_route: is_grpc_route,
+                    cors: extras.cors.clone(),
                     cluster: Arc::from(cluster_name.as_str()),
                 })
                 .collect()
@@ -600,6 +610,7 @@ struct RouteExtras {
     backend_timeout_ms: u64,
     invalid_backend_ref: bool,
     grpc_route: bool,
+    cors: Option<crate::config::RouteCorsPolicy>,
 }
 
 fn expand_route_match(
@@ -632,6 +643,7 @@ fn expand_route_match(
             backend_timeout_ms: extras.backend_timeout_ms,
             invalid_backend_ref: extras.invalid_backend_ref,
             grpc_route: extras.grpc_route,
+            cors: extras.cors.clone(),
             cluster: Arc::from(cluster_name),
         })
         .collect()
@@ -699,9 +711,6 @@ fn normalize_prefix(prefix: &str) -> String {
 
 fn build_filter_chain(name: String, routes: Vec<Route>, gw_routes: &[GwRoute]) -> FilterChainConfig {
     let mut filters = Vec::new();
-    if let Some(cors_entry) = build_cors_entry(gw_routes) {
-        filters.push(cors_entry);
-    }
     filters.push(build_router_entry(routes));
     filters.push(build_lb_entry(gw_routes));
     FilterChainConfig { name, filters }
@@ -807,45 +816,6 @@ fn build_router_entry(routes: Vec<Route>) -> FilterEntry {
     }
 }
 
-fn build_cors_entry(gw_routes: &[GwRoute]) -> Option<FilterEntry> {
-    let cors = gw_routes.iter().find_map(|r| r.cors.as_ref())?;
-    let mut config_map = serde_yaml::Mapping::new();
-    config_map.insert(
-        k("allow_origins"),
-        YamlValue::Sequence(cors.allow_origins.iter().map(|s| YamlValue::String(s.clone())).collect()),
-    );
-    if !cors.allow_methods.is_empty() {
-        config_map.insert(
-            k("allow_methods"),
-            YamlValue::Sequence(cors.allow_methods.iter().map(|s| YamlValue::String(s.clone())).collect()),
-        );
-    }
-    if !cors.allow_headers.is_empty() {
-        config_map.insert(
-            k("allow_headers"),
-            YamlValue::Sequence(cors.allow_headers.iter().map(|s| YamlValue::String(s.clone())).collect()),
-        );
-    }
-    if !cors.expose_headers.is_empty() {
-        config_map.insert(
-            k("expose_headers"),
-            YamlValue::Sequence(cors.expose_headers.iter().map(|s| YamlValue::String(s.clone())).collect()),
-        );
-    }
-    config_map.insert(k("max_age"), YamlValue::Number(serde_yaml::Number::from(cors.max_age)));
-    if cors.allow_credentials {
-        config_map.insert(k("allow_credentials"), YamlValue::Bool(true));
-    }
-    Some(FilterEntry {
-        filter_type: "cors".to_owned(),
-        config: YamlValue::Mapping(config_map),
-        branch_chains: None,
-        conditions: Vec::new(),
-        response_conditions: Vec::new(),
-        failure_mode: FailureMode::Closed,
-        name: None,
-    })
-}
 
 fn build_lb_entry(gw_routes: &[GwRoute]) -> FilterEntry {
     let mut seen: HashMap<String, ()> = HashMap::new();

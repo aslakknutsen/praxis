@@ -114,8 +114,42 @@ pub struct Route {
     #[serde(default)]
     pub grpc_route: bool,
 
+    /// Per-route CORS policy (Gateway API CORSFilter). When set, the router
+    /// handles preflight and injects CORS response headers for this route.
+    #[serde(default)]
+    pub cors: Option<RouteCorsPolicy>,
+
     /// Name of the cluster to route matched requests to.
     pub cluster: Arc<str>,
+}
+
+/// Per-route CORS policy from Gateway API.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RouteCorsPolicy {
+    /// Allowed origins (exact strings or `*.suffix` wildcards; `"*"` = any).
+    #[serde(default)]
+    pub allow_origins: Vec<String>,
+
+    /// Allowed HTTP methods. Empty = `["GET", "HEAD", "POST"]`.
+    #[serde(default)]
+    pub allow_methods: Vec<String>,
+
+    /// Allowed request headers.
+    #[serde(default)]
+    pub allow_headers: Vec<String>,
+
+    /// Response headers exposed to the client.
+    #[serde(default)]
+    pub expose_headers: Vec<String>,
+
+    /// Preflight cache duration in seconds.
+    #[serde(default)]
+    pub max_age: u32,
+
+    /// Whether to include `Access-Control-Allow-Credentials: true`.
+    #[serde(default)]
+    pub allow_credentials: bool,
 }
 
 /// Gateway API RequestRedirect rendered as status + Location template (`${path}`, `${query}`).

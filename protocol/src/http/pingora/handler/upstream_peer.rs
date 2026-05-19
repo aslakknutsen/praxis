@@ -22,6 +22,10 @@ use super::super::{context::PingoraRequestCtx, convert::apply_connection_options
 /// On the first call, moves the upstream from `ctx.upstream` into
 /// `ctx.upstream_for_retry` and borrows it. On retries, borrows the
 /// saved copy directly. No clone is performed.
+///
+/// When `ctx.request_deadline` is set (Gateway API route timeout), the
+/// remaining time is applied as the peer read timeout so Pingora aborts
+/// if the upstream doesn't respond in time.
 pub(super) fn execute(ctx: &mut PingoraRequestCtx) -> Result<Box<HttpPeer>> {
     if ctx.upstream_for_retry.is_none() {
         ctx.upstream_for_retry = ctx.upstream.take();
@@ -35,7 +39,20 @@ pub(super) fn execute(ctx: &mut PingoraRequestCtx) -> Result<Box<HttpPeer>> {
         )
     })?;
 
-    build_peer(upstream)
+    let mut peer = build_peer(upstream)?;
+
+    if let Some(deadline) = ctx.request_deadline {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(pingora_core::Error::explain(
+                pingora_core::ErrorType::ReadTimedout,
+                "request timeout expired before upstream connection",
+            ));
+        }
+        peer.options.read_timeout = Some(remaining);
+    }
+
+    Ok(peer)
 }
 
 /// When the downstream request carries gRPC content-type, enable HTTP/2 (h2c)

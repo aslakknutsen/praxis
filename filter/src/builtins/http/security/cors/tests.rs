@@ -647,11 +647,11 @@ fn multiple_exact_origins_match_and_reject() {
 }
 
 #[test]
-fn deep_nested_subdomain_not_matched_by_wildcard() {
+fn deep_nested_subdomain_matched_by_wildcard() {
     let policy = build_origin_policy(&["https://*.example.com".to_owned()]);
     assert!(
-        !policy.is_allowed("https://a.b.example.com"),
-        "deep nested subdomain should not match single-level wildcard"
+        policy.is_allowed("https://a.b.example.com"),
+        "deep nested subdomain should match wildcard (Gateway API semantics)"
     );
 }
 
