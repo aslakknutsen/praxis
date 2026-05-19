@@ -1230,6 +1230,96 @@ mod merge_tests {
     }
 
     #[test]
+    fn partial_invalid_backend_ref_produces_valid_config() {
+        let resource = Resource {
+            key: "ns/gw/http".into(),
+            listener: Some(GwListener {
+                key: "ns/gw/http".into(),
+                hostname: "".into(),
+                port: 80,
+                protocol: Protocol::Http as i32,
+                tls: None,
+                allowed_routes: vec![],
+            }),
+            routes: vec![
+                GwRoute {
+                    key: "ns/route/denied".into(),
+                    listener_key: "ns/gw/http".into(),
+                    hostnames: vec![],
+                    matches: vec![super::super::proto::RouteMatch {
+                        path_prefix: "/v2".into(),
+                        ..Default::default()
+                    }],
+                    invalid_backend_ref: true,
+                    backends: vec![],
+                    ..Default::default()
+                },
+                GwRoute {
+                    key: "ns/route/allowed".into(),
+                    listener_key: "ns/gw/http".into(),
+                    hostnames: vec![],
+                    matches: vec![super::super::proto::RouteMatch {
+                        path_prefix: "/".into(),
+                        ..Default::default()
+                    }],
+                    invalid_backend_ref: false,
+                    backends: vec![Backend {
+                        host: "app-v1.other.svc.cluster.local".into(),
+                        port: 8080,
+                        dial_port: 0,
+                        weight: 1,
+                        inference_pool: None,
+                        tls: None,
+                    }],
+                    ..Default::default()
+                },
+            ],
+        };
+
+        let cfg = translate(&[resource]);
+
+        assert_eq!(cfg.clusters.len(), 1, "only the valid backend should produce a cluster");
+        assert_eq!(cfg.clusters[0].name.as_ref(), "app-v1.other.svc.cluster.local:8080");
+
+        let router = cfg.filter_chains[0]
+            .filters
+            .iter()
+            .find(|f| f.filter_type == "router")
+            .expect("router filter");
+        let routes = router.config["routes"].as_sequence().expect("routes seq");
+        assert_eq!(routes.len(), 2, "both routes should appear in router config");
+
+        let denied_route = routes
+            .iter()
+            .find(|r| r.get("path_prefix").and_then(|v| v.as_str()) == Some("/v2"))
+            .expect("denied /v2 route");
+        assert_eq!(
+            denied_route.get("cluster").and_then(|v| v.as_str()),
+            Some("__invalid_backend__"),
+        );
+        assert_eq!(
+            denied_route.get("invalid_backend_ref").and_then(|v| v.as_bool()),
+            Some(true),
+        );
+
+        let lb = cfg.filter_chains[0]
+            .filters
+            .iter()
+            .find(|f| f.filter_type == "load_balancer")
+            .expect("load_balancer filter");
+        let lb_clusters = lb.config["clusters"].as_sequence().expect("clusters seq");
+        assert_eq!(lb_clusters.len(), 1, "LB should have only the valid cluster");
+        let lb_cluster_names: Vec<&str> = lb_clusters
+            .iter()
+            .filter_map(|c| c.get("name").and_then(|v| v.as_str()))
+            .collect();
+        assert!(
+            !lb_cluster_names.contains(&"__invalid_backend__"),
+            "__invalid_backend__ should NOT appear in LB clusters"
+        );
+    }
+
+    #[test]
     fn grpc_route_service_method_becomes_exact_path() {
         let resource = Resource {
             key: "ns/gw/http".into(),

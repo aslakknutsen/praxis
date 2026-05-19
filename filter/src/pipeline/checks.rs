@@ -99,6 +99,12 @@ pub(super) fn check_duplicate_load_balancers(names: &[&str], errors: &mut Vec<St
     }
 }
 
+/// Sentinel cluster name used by gwxds for routes whose backend reference
+/// is not permitted (e.g. denied by ReferenceGrant). The router filter
+/// returns 500 for these routes before the load_balancer is reached, so no
+/// real cluster definition is needed.
+const INVALID_BACKEND_CLUSTER: &str = "__invalid_backend__";
+
 /// Cross-reference router cluster names against LB cluster names.
 pub(super) fn check_misaligned_clusters(entries: &[FilterEntry], errors: &mut Vec<String>) {
     let router_clusters = super::clusters::extract_router_clusters(entries);
@@ -109,6 +115,9 @@ pub(super) fn check_misaligned_clusters(entries: &[FilterEntry], errors: &mut Ve
     }
 
     for cluster in &router_clusters {
+        if cluster == INVALID_BACKEND_CLUSTER {
+            continue;
+        }
         if !lb_clusters.contains(cluster.as_str()) {
             errors.push(format!(
                 "router routes to cluster '{cluster}' which is not \
@@ -434,6 +443,27 @@ mod tests {
         let mut errors = Vec::new();
         check_misaligned_clusters(&entries, &mut errors);
         assert!(errors.is_empty(), "aligned clusters should produce no errors");
+    }
+
+    #[test]
+    fn invalid_backend_sentinel_skipped_in_misalignment_check() {
+        let entries = vec![
+            make_entry(
+                "router",
+                "routes:\n  - path_prefix: \"/v2\"\n    cluster: __invalid_backend__\n  - path_prefix: \"/\"\n    cluster: web",
+            ),
+            make_entry(
+                "load_balancer",
+                "clusters:\n  - name: web\n    endpoints: [\"1.2.3.4:80\"]",
+            ),
+        ];
+        let mut errors = Vec::new();
+        check_misaligned_clusters(&entries, &mut errors);
+        assert!(
+            errors.is_empty(),
+            "__invalid_backend__ should be exempt from misalignment check, got: {:?}",
+            errors
+        );
     }
 
     #[test]
