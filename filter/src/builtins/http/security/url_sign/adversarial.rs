@@ -8,8 +8,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use http::Method;
 use praxis_core::config::{Condition, ConditionMatch, FailureMode, FilterEntry};
 
+use http::HeaderMap;
+
 use crate::{
-    FilterAction, FilterPipeline, FilterRegistry,
+    FilterAction, FilterPipeline, FilterRegistry, Request,
     filter::HttpFilter,
     test_utils::{make_filter_context, make_request},
 };
@@ -36,6 +38,28 @@ fn sign_query(secret: &str, method: &str, path: &str, query: &str, expires: &str
 fn sign_path(secret: &str, resource: &str, expires: &str) -> String {
     let canonical = format!("GET\n{resource}\n\n{expires}\n");
     compute_mac(secret.as_bytes(), &canonical, Encoding::Hex).unwrap()
+}
+
+fn sign_query_with_host(
+    secret: &str,
+    method: &str,
+    path: &str,
+    query: &str,
+    expires: &str,
+    host: &str,
+) -> String {
+    let canonical = format!("{method}\n{path}\n{query}\n{expires}\n{host}");
+    compute_mac(secret.as_bytes(), &canonical, Encoding::Hex).unwrap()
+}
+
+fn make_request_with_host(method: Method, path: &str, host: &str) -> Request {
+    let mut headers = HeaderMap::new();
+    headers.insert("host", host.parse().expect("invalid host header"));
+    Request {
+        method,
+        uri: path.parse().expect("invalid URI in test"),
+        headers,
+    }
 }
 
 #[tokio::test]
@@ -362,6 +386,151 @@ fn pipeline_rejects_conditional_url_sign() {
     assert!(
         errors.iter().any(|e| e.contains("security filter 'url_sign'")),
         "pipeline must reject conditional url_sign: {errors:?}"
+    );
+}
+
+#[tokio::test]
+async fn query_mode_double_encoded_traversal_rejects_403() {
+    let secret = "qa-adversarial-secret";
+    let expires = "9999999999";
+    let decoded_path = "/public/file";
+    let sig = sign_query(secret, "GET", decoded_path, "", expires);
+    let filter = UrlSignFilter::try_from_config(&make_filter_yaml("")).unwrap();
+
+    let path = format!("/public/%252e%252e/admin?expires={expires}&sig={sig}");
+    let req = make_request(Method::GET, &path);
+    let mut ctx = make_filter_context(&req);
+    let action = filter.on_request(&mut ctx).await.unwrap();
+    assert!(
+        matches!(action, FilterAction::Reject(r) if r.status == 403),
+        "query mode double-encoded traversal must reject"
+    );
+}
+
+#[tokio::test]
+async fn query_mode_encoded_double_slash_rejects_403() {
+    let secret = "qa-adversarial-secret";
+    let expires = "9999999999";
+    let decoded_path = "/a/b";
+    let sig = sign_query(secret, "GET", decoded_path, "", expires);
+    let filter = UrlSignFilter::try_from_config(&make_filter_yaml("")).unwrap();
+
+    let path = format!("/a%2f%2fb?expires={expires}&sig={sig}");
+    let req = make_request(Method::GET, &path);
+    let mut ctx = make_filter_context(&req);
+    let action = filter.on_request(&mut ctx).await.unwrap();
+    assert!(
+        matches!(action, FilterAction::Reject(r) if r.status == 403),
+        "query mode encoded double slash must reject"
+    );
+}
+
+#[tokio::test]
+async fn host_header_mismatch_with_include_host_rejects_403() {
+    let secret = "qa-adversarial-secret";
+    let expires = "9999999999";
+    let path = "/resource";
+    let signed_host = "cdn.example.com";
+    let sig = sign_query_with_host(secret, "GET", path, "", expires, signed_host);
+    let filter = UrlSignFilter::try_from_config(&make_filter_yaml(
+        "canonical:\n  include_host: true\n",
+    ))
+    .unwrap();
+
+    let req = make_request_with_host(
+        Method::GET,
+        &format!("{path}?expires={expires}&sig={sig}"),
+        "evil.example.com",
+    );
+    let mut ctx = make_filter_context(&req);
+    let action = filter.on_request(&mut ctx).await.unwrap();
+    assert!(
+        matches!(action, FilterAction::Reject(r) if r.status == 403),
+        "host swap must reject when include_host is enabled"
+    );
+}
+
+#[tokio::test]
+async fn multi_key_missing_kid_rejects_403() {
+    let yaml: serde_yaml::Value = serde_yaml::from_str(
+        r#"
+secrets:
+  - id: v1
+    value: "key-one"
+  - id: v2
+    value: "key-two"
+key_id_param: kid
+"#,
+    )
+    .unwrap();
+    let filter = UrlSignFilter::try_from_config(&yaml).unwrap();
+    let expires = "9999999999";
+    let sig = sign_query("key-one", "GET", "/x", "", expires);
+
+    let req = make_request(Method::GET, &format!("/x?expires={expires}&sig={sig}"));
+    let mut ctx = make_filter_context(&req);
+    let action = filter.on_request(&mut ctx).await.unwrap();
+    assert!(
+        matches!(action, FilterAction::Reject(r) if r.status == 403),
+        "multi-key config without kid must reject"
+    );
+}
+
+#[tokio::test]
+async fn base64url_signature_encoding_accepts_valid_mac() {
+    let secret = "qa-adversarial-secret";
+    let expires = "9999999999";
+    let path = "/doc";
+    let canonical = format!("GET\n{path}\n\n{expires}\n");
+    let sig = compute_mac(secret.as_bytes(), &canonical, Encoding::Base64Url).unwrap();
+    let filter = UrlSignFilter::try_from_config(&make_filter_yaml("encoding: base64url\n")).unwrap();
+
+    let req = make_request(Method::GET, &format!("{path}?expires={expires}&sig={sig}"));
+    let mut ctx = make_filter_context(&req);
+    let action = filter.on_request(&mut ctx).await.unwrap();
+    assert!(
+        matches!(action, FilterAction::Continue),
+        "valid base64url signature must verify"
+    );
+}
+
+#[tokio::test]
+async fn duplicate_query_key_last_value_in_canonical_rejects_tamper() {
+    let secret = "qa-adversarial-secret";
+    let expires = "9999999999";
+    let sig = sign_query(secret, "GET", "/x", "token=abc", expires);
+    let filter = UrlSignFilter::try_from_config(&make_filter_yaml("")).unwrap();
+
+    let req = make_request(
+        Method::GET,
+        &format!("/x?token=abc&token=evil&expires={expires}&sig={sig}"),
+    );
+    let mut ctx = make_filter_context(&req);
+    let action = filter.on_request(&mut ctx).await.unwrap();
+    assert!(
+        matches!(action, FilterAction::Reject(r) if r.status == 403),
+        "duplicate query key with tampered trailing value must reject"
+    );
+}
+
+#[tokio::test]
+async fn host_required_but_header_absent_rejects_403() {
+    let secret = "qa-adversarial-secret";
+    let expires = "9999999999";
+    let path = "/resource";
+    let signed_host = "cdn.example.com";
+    let sig = sign_query_with_host(secret, "GET", path, "", expires, signed_host);
+    let filter = UrlSignFilter::try_from_config(&make_filter_yaml(
+        "canonical:\n  include_host: true\n",
+    ))
+    .unwrap();
+
+    let req = make_request(Method::GET, &format!("{path}?expires={expires}&sig={sig}"));
+    let mut ctx = make_filter_context(&req);
+    let action = filter.on_request(&mut ctx).await.unwrap();
+    assert!(
+        matches!(action, FilterAction::Reject(r) if r.status == 403),
+        "signed host must be present on request when include_host is enabled"
     );
 }
 
