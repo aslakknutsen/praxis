@@ -9,7 +9,7 @@ use http::{HeaderMap, Method, Uri};
 use percent_encoding::{AsciiSet, CONTROLS};
 
 use super::config::{CanonicalConfig, Placement};
-use super::path::{percent_decode_path, sanitize_resource_path};
+use super::path::sanitize_resource_path;
 
 /// Characters percent-encoded in canonical query values.
 const QUERY_VALUE_ENCODE_SET: &AsciiSet = &CONTROLS.add(b' ').add(b'"').add(b'#').add(b'&').add(b'+').add(b'=');
@@ -67,7 +67,7 @@ pub(super) fn build_canonical_input(inputs: &CanonicalInputs<'_>) -> Result<Stri
 
 fn canonical_path(inputs: &CanonicalInputs<'_>) -> Result<String, ()> {
     match inputs.placement {
-        Placement::Query => percent_decode_path(inputs.uri.path()),
+        Placement::Query => sanitize_resource_path(inputs.uri.path()),
         Placement::Path => {
             let raw = inputs.resource_path_raw.ok_or(())?;
             sanitize_resource_path(raw)

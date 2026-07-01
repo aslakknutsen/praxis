@@ -191,20 +191,33 @@ impl HttpFilter for UrlSignFilter {
             return Ok(action);
         }
 
-        if self.placement == Placement::Path
-            && self.strip_signature
-            && let Some(raw) = extracted.resource_path_raw
-        {
-            match sanitize_resource_path(raw) {
+        match self.placement {
+            Placement::Query => match sanitize_resource_path(ctx.request.uri.path()) {
                 Ok(clean) => {
-                    trace!(rewritten_path = %clean, "url_sign: stripped signature path");
+                    trace!(rewritten_path = %clean, "url_sign: normalized query-mode path");
                     ctx.rewritten_path = Some(clean);
                 },
                 Err(()) => {
-                    debug!("url_sign: rewritten path sanitization failed");
+                    debug!("url_sign: query-mode path sanitization failed");
                     return Ok(Self::reject("rewritten_path_failed"));
                 },
-            }
+            },
+            Placement::Path if self.strip_signature => {
+                let Some(raw) = extracted.resource_path_raw else {
+                    return Ok(FilterAction::Continue);
+                };
+                match sanitize_resource_path(raw) {
+                    Ok(clean) => {
+                        trace!(rewritten_path = %clean, "url_sign: stripped signature path");
+                        ctx.rewritten_path = Some(clean);
+                    },
+                    Err(()) => {
+                        debug!("url_sign: rewritten path sanitization failed");
+                        return Ok(Self::reject("rewritten_path_failed"));
+                    },
+                }
+            },
+            Placement::Path => {},
         }
 
         Ok(FilterAction::Continue)

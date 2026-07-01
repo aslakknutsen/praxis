@@ -58,7 +58,7 @@ async fn method_swap_on_signed_get_rejects_403() {
 }
 
 #[tokio::test]
-async fn query_mode_percent_encoded_path_passes_mac_without_rewritten_path() {
+async fn query_mode_percent_encoded_path_sets_decoded_rewritten_path() {
     let secret = "qa-adversarial-secret";
     let expires = "9999999999";
     let decoded_path = "/files/report.pdf";
@@ -74,9 +74,28 @@ async fn query_mode_percent_encoded_path_passes_mac_without_rewritten_path() {
         matches!(action, FilterAction::Continue),
         "MAC verifies on decoded path even when request path is percent-encoded"
     );
+    assert_eq!(
+        ctx.rewritten_path.as_deref(),
+        Some("/files/report.pdf"),
+        "query mode must set rewritten_path to decoded canonical path"
+    );
+}
+
+#[tokio::test]
+async fn query_mode_encoded_traversal_rejects_403() {
+    let secret = "qa-adversarial-secret";
+    let expires = "9999999999";
+    let decoded_path = "/public/file";
+    let sig = sign_query(secret, "GET", decoded_path, "", expires);
+    let filter = UrlSignFilter::try_from_config(&make_filter_yaml("")).unwrap();
+
+    let path = format!("/public/%2e%2e/admin?expires={expires}&sig={sig}");
+    let req = make_request(Method::GET, &path);
+    let mut ctx = make_filter_context(&req);
+    let action = filter.on_request(&mut ctx).await.unwrap();
     assert!(
-        ctx.rewritten_path.is_none(),
-        "query mode leaves rewritten_path unset; router will match raw encoded path"
+        matches!(action, FilterAction::Reject(r) if r.status == 403),
+        "query mode encoded traversal must reject"
     );
 }
 

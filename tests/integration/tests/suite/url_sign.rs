@@ -169,7 +169,7 @@ filter_chains:
 }
 
 #[test]
-fn query_mode_encoded_path_reaches_backend_with_valid_mac() {
+fn query_mode_encoded_path_routes_on_decoded_path_with_valid_mac() {
     let backend_guard = start_backend_with_shutdown("encoded-path-backend");
     let backend_port = backend_guard.port();
     let proxy_port = free_port();
@@ -211,7 +211,7 @@ filter_chains:
     let (status, body) = http_get(proxy.addr(), &encoded_path, None);
     assert_eq!(
         status, 200,
-        "query mode accepts MAC on decoded path even when wire path is percent-encoded"
+        "query mode must route on decoded path after percent-encoded wire path verifies"
     );
     assert_eq!(body, "encoded-path-backend");
 }
