@@ -450,3 +450,14 @@ path_prefix: /s
         assert!(matches!(action, FilterAction::Reject(r) if r.status == 403));
     }
 }
+
+#[cfg(test)]
+#[path = "adversarial.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    reason = "adversarial tests"
+)]
+mod adversarial;

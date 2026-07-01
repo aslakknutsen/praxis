@@ -167,3 +167,74 @@ filter_chains:
     assert_eq!(status, 200, "path-mode signed URL should route after strip");
     assert_eq!(body, "path-mode");
 }
+
+#[test]
+fn query_mode_encoded_path_reaches_backend_with_valid_mac() {
+    let backend_guard = start_backend_with_shutdown("encoded-path-backend");
+    let backend_port = backend_guard.port();
+    let proxy_port = free_port();
+    let secret = b"qa-encoding-secret";
+    let expires = "9999999999";
+    let decoded_path = "/files/report.pdf";
+    let sig = sign_query(secret, decoded_path, "token=abc", expires);
+
+    let yaml = format!(
+        r#"
+listeners:
+  - name: default
+    address: "127.0.0.1:{proxy_port}"
+    filter_chains:
+      - main
+filter_chains:
+  - name: main
+    filters:
+      - filter: url_sign
+        secret:
+          value: "qa-encoding-secret"
+      - filter: router
+        routes:
+          - path_prefix: "/"
+            cluster: backend
+      - filter: load_balancer
+        clusters:
+          - name: backend
+            endpoints:
+              - "127.0.0.1:{backend_port}"
+"#
+    );
+
+    let config = Config::from_yaml(&yaml).unwrap();
+    let proxy = start_proxy(&config);
+    wait_for_http(proxy.addr());
+
+    let encoded_path = format!("/files%2freport.pdf?token=abc&expires={expires}&sig={sig}");
+    let (status, body) = http_get(proxy.addr(), &encoded_path, None);
+    assert_eq!(
+        status, 200,
+        "query mode accepts MAC on decoded path even when wire path is percent-encoded"
+    );
+    assert_eq!(body, "encoded-path-backend");
+}
+
+#[test]
+fn config_rejects_url_sign_with_failure_mode_open() {
+    use praxis_core::config::{FailureMode, FilterEntry};
+    use praxis_filter::{FilterPipeline, FilterRegistry};
+
+    let registry = FilterRegistry::with_builtins();
+    let mut entries = vec![FilterEntry {
+        branch_chains: None,
+        filter_type: "url_sign".into(),
+        config: serde_yaml::from_str("secret:\n  value: secret\n").unwrap(),
+        conditions: vec![],
+        name: None,
+        response_conditions: vec![],
+        failure_mode: FailureMode::Open,
+    }];
+    let pipeline = FilterPipeline::build(&mut entries, &registry).unwrap();
+    let errors = pipeline.ordering_errors(&entries);
+    assert!(
+        errors.iter().any(|e| e.contains("failure_mode: open")),
+        "pipeline validation must reject url_sign with failure_mode: open: {errors:?}"
+    );
+}
