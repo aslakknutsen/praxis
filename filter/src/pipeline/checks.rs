@@ -13,7 +13,7 @@ use super::filter::PipelineFilter;
 // -----------------------------------------------------------------------------
 
 /// Filters classified as security-critical (bypass risk when conditional).
-const SECURITY_FILTERS: &[&str] = &["ip_acl", "forwarded_headers"];
+const SECURITY_FILTERS: &[&str] = &["ip_acl", "forwarded_headers", "url_sign"];
 
 /// Filters that rewrite the request path.
 const REWRITE_FILTERS: &[&str] = &["path_rewrite", "url_rewrite"];
@@ -73,6 +73,25 @@ pub(super) fn check_conditional_security(names: &[&str], filters: &[PipelineFilt
                      non-matching requests"
                 ));
             }
+        }
+    }
+}
+
+/// `url_sign` with `failure_mode: open` skips verification on internal errors.
+#[allow(clippy::indexing_slicing, reason = "enumeration bounds")]
+pub(super) fn check_url_sign_open_failure_mode(
+    names: &[&str],
+    filters: &[PipelineFilter],
+    errors: &mut Vec<String>,
+) {
+    use praxis_core::config::FailureMode;
+
+    for (i, name) in names.iter().enumerate() {
+        if *name == "url_sign" && filters[i].failure_mode == FailureMode::Open {
+            errors.push(format!(
+                "url_sign at position {i} has failure_mode: open; \
+                 signature verification must not be bypassed"
+            ));
         }
     }
 }
@@ -323,6 +342,30 @@ mod tests {
         let mut errors = Vec::new();
         check_conditional_security(&names, &filters, &mut errors);
         assert!(errors.is_empty(), "unconditional security filter should not error");
+    }
+
+    #[test]
+    fn url_sign_open_failure_mode_errors() {
+        let names = vec!["url_sign"];
+        let mut filters = vec![make_pf(vec![])];
+        filters[0].failure_mode = FailureMode::Open;
+        let mut errors = Vec::new();
+        check_url_sign_open_failure_mode(&names, &filters, &mut errors);
+        assert_eq!(errors.len(), 1, "should produce exactly one error");
+        assert!(
+            errors[0].contains("failure_mode: open"),
+            "error should mention open failure mode: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn conditional_url_sign_errors() {
+        let names = vec!["url_sign"];
+        let filters = vec![make_pf(vec![make_condition()])];
+        let mut errors = Vec::new();
+        check_conditional_security(&names, &filters, &mut errors);
+        assert_eq!(errors.len(), 1, "conditional url_sign should error");
     }
 
     #[test]

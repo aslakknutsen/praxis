@@ -117,6 +117,7 @@ impl FilterPipeline {
         super::checks::check_lb_without_router(&names, &mut errors);
         super::checks::check_unconditional_static_response(&names, &self.filters, &mut errors);
         super::checks::check_conditional_security(&names, &self.filters, &mut errors);
+        super::checks::check_url_sign_open_failure_mode(&names, &self.filters, &mut errors);
         super::checks::check_duplicate_routers(&names, &mut errors);
         super::checks::check_duplicate_load_balancers(&names, &mut errors);
         super::checks::check_misaligned_clusters(entries, &mut errors);

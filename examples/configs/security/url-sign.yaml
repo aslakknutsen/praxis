@@ -1,0 +1,44 @@
+# URL Signing (HMAC-SHA256)
+#
+# Validates pre-signed links at the edge. Link generation is an operator
+# concern; this filter only verifies signatures.
+#
+# Usage:
+#   URL_SIGN_SECRET=dev-secret cargo run -p praxis -- -c examples/configs/security/url-sign.yaml
+#
+# Generate a signed link (example):
+#   python3 - <<'PY'
+#   import hmac, hashlib
+#   secret = b"dev-secret"
+#   canonical = "GET\n/files/report.pdf\ntoken=abc\n9999999999\n"
+#   sig = hmac.new(secret, canonical.encode(), hashlib.sha256).hexdigest()
+#   print(f"http://127.0.0.1:8080/files/report.pdf?token=abc&expires=9999999999&sig={sig}")
+#   PY
+
+listeners:
+  - name: default
+    address: "127.0.0.1:8080"
+    filter_chains:
+      - main
+
+filter_chains:
+  - name: main
+    filters:
+      - filter: url_sign
+        secret:
+          env_var: URL_SIGN_SECRET
+        placement: query
+        expires:
+          required: true
+          clock_skew_secs: 60
+
+      - filter: router
+        routes:
+          - path_prefix: "/"
+            cluster: backend
+
+      - filter: load_balancer
+        clusters:
+          - name: backend
+            endpoints:
+              - "127.0.0.1:3000"

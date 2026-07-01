@@ -15,6 +15,7 @@ pub use observability::{AccessLogFilter, RequestIdFilter};
 pub use payload_processing::{CompressionFilter, JsonBodyFieldFilter, JsonRpcFilter};
 pub use security::{
     CorsFilter, CredentialInjectionFilter, ForwardedHeadersFilter, GuardrailsAction, GuardrailsFilter, IpAclFilter,
+    UrlSignFilter,
 };
 pub use traffic_management::{
     CircuitBreakerFilter, LoadBalancerFilter, RateLimitFilter, RedirectFilter, RouterFilter, StaticResponseFilter,

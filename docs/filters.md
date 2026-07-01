@@ -484,6 +484,7 @@ A filter can have both `conditions` (request phase) and
 | `guardrails` | Security | HTTP | Reject requests matching header/body string or regex rules |
 | `ip_acl` | Security | HTTP | `allow` / `deny` (CIDR lists); 403 on denial |
 | `credential_injection` | Security | HTTP | Per-cluster API key injection with client credential stripping |
+| `url_sign` | Security | HTTP | HMAC-SHA256 signed URL validation; optional expiry |
 | `json_body_field` | Payload Processing | HTTP | Extract a JSON body field and promote to header |
 | `json_rpc` | Payload Processing | HTTP | Parse JSON-RPC 2.0 envelopes and extract method/id/kind for routing |
 | `compression` | Payload Processing | HTTP | Gzip, brotli, and zstd response compression |
@@ -505,6 +506,48 @@ pipelines. If both rewrite filters appear in the same
 pipeline, only the last one takes effect. Validation
 rejects this by default; set `allow_rewrite_override: true`
 on the later filter to permit it.
+
+## URL Signing Algorithm
+
+Link generators and the `url_sign` filter must build the
+same canonical input byte-for-byte before HMAC-SHA256.
+
+Canonical format (lines separated by `\n`, no trailing newline):
+
+```text
+{METHOD}
+{PATH}
+{QUERY}
+{EXPIRES}
+{HOST}
+```
+
+| Field | Rules |
+| --- | --- |
+| `METHOD` | Uppercase HTTP method; empty when `canonical.include_method: false` |
+| `PATH` | Percent-decoded path starting with `/`; path mode uses resource path only (prefix/expiry/sig stripped) |
+| `QUERY` | Sorted `key=value` pairs; sig/expiry/kid params excluded; values percent-encoded |
+| `EXPIRES` | Expiry string from the URL; empty when expiration disabled and absent |
+| `HOST` | Lowercase host without port; empty unless `canonical.include_host: true` |
+
+MAC: `HMAC-SHA256(key, canonical_bytes)` encoded as lowercase
+hex (default) or unpadded base64url.
+
+**Worked example.** Secret `test-secret`, request
+`GET /files/report.pdf?token=abc&expires=1719859200&sig=...`:
+
+```text
+GET
+/files/report.pdf
+token=abc
+1719859200
+
+```
+
+Query param `expires` is excluded from the `QUERY` line
+because it is represented in the `EXPIRES` field. Invalid,
+expired, and bad signatures all receive `403 Forbidden`
+with an empty body.
 
 ## Custom Filters
 

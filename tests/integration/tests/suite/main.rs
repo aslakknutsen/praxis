@@ -62,5 +62,6 @@ mod tcp_access_log;
 mod tcp_load_balancer;
 mod tls;
 mod url_rewrite;
+mod url_sign;
 mod websocket;
 mod wildcard_routing;

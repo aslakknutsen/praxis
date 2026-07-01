@@ -339,6 +339,7 @@ supports TCP-level filters too.
 | `guardrails` | Security | HTTP |
 | `ip_acl` | Security | HTTP |
 | `credential_injection` | Security | HTTP |
+| `url_sign` | Security | HTTP |
 | `json_body_field` | Payload Processing | HTTP |
 | `compression` | Payload Processing | HTTP |
 | `cors` | Security | HTTP |
@@ -553,6 +554,49 @@ clients receive credential upgrades. See
 | `clusters[].strip_client_credential` | bool | no | Remove client-sent value before injection (default: true) |
 
 [credential-injection.yaml]: ../examples/configs/ai/credential-injection.yaml
+
+### URL Signing
+
+Validates HMAC-signed URLs at the edge. The filter checks
+signatures and optional expiry; it does not generate links.
+Place before `router` so path-segment mode can strip
+signature segments into `rewritten_path`. Do not attach
+`conditions` or set `failure_mode: open` on this filter.
+
+See [url-sign.yaml] for a working example.
+
+```yaml
+- filter: url_sign
+  secret:
+    env_var: URL_SIGN_SECRET
+  placement: query
+  signature_param: sig
+  expires_param: expires
+  expires:
+    required: true
+    clock_skew_secs: 60
+```
+
+| Field | Type | Default | Description |
+| ----- | ---- | ------- | ----------- |
+| `secret.value` | string | — | Inline secret (dev/test only) |
+| `secret.env_var` | string | — | Environment variable for secret |
+| `secrets[]` | list | — | Key rotation entries (`id` + `value`/`env_var`); mutually exclusive with `secret` |
+| `algorithm` | string | `hmac-sha256` | HMAC algorithm (only `hmac-sha256` in v1) |
+| `placement` | string | `query` | `query` or `path` |
+| `signature_param` | string | `sig` | Query param for signature (query mode) |
+| `expires_param` | string | `expires` | Query param for expiry (query mode) |
+| `key_id_param` | string | disabled | Optional query param for key id |
+| `path_prefix` | string | — | Required for `placement: path` (e.g. `/s`) |
+| `expires.required` | bool | `true` | Require expiry parameter |
+| `expires.clock_skew_secs` | integer | `60` | Accept expiry within ± skew of now |
+| `encoding` | string | `hex` | `hex` or `base64url` |
+| `strip_signature` | bool | `true` | Set `rewritten_path` after verify (path mode) |
+| `canonical.include_method` | bool | `true` | Include uppercase HTTP method |
+| `canonical.include_host` | bool | `false` | Include lowercase host without port |
+| `canonical.include_query` | bool | `true` | Include canonical query (sig params excluded) |
+
+[url-sign.yaml]: ../examples/configs/security/url-sign.yaml
 
 ### TCP Access Log
 

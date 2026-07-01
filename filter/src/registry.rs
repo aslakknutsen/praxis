@@ -112,6 +112,7 @@ fn register_http_builtins(factories: &mut HashMap<String, FilterFactory>) {
         AccessLogFilter, CircuitBreakerFilter, CompressionFilter, CorsFilter, CredentialInjectionFilter,
         ForwardedHeadersFilter, HeaderFilter, IpAclFilter, JsonBodyFieldFilter, JsonRpcFilter, PathRewriteFilter,
         RateLimitFilter, RedirectFilter, RequestIdFilter, StaticResponseFilter, TimeoutFilter, UrlRewriteFilter,
+        UrlSignFilter,
     };
 
     register_http(factories, "access_log", AccessLogFilter::from_config);
@@ -136,6 +137,7 @@ fn register_http_builtins(factories: &mut HashMap<String, FilterFactory>) {
     register_http(factories, "static_response", StaticResponseFilter::from_config);
     register_http(factories, "timeout", TimeoutFilter::from_config);
     register_http(factories, "url_rewrite", UrlRewriteFilter::from_config);
+    register_http(factories, "url_sign", UrlSignFilter::from_config);
     register_http(factories, "json_body_field", JsonBodyFieldFilter::from_config);
     register_http(factories, "json_rpc", JsonRpcFilter::from_config);
     #[cfg(feature = "ai-inference")]
@@ -241,6 +243,7 @@ mod tests {
         );
         assert!(names.contains(&"timeout"), "timeout should be registered");
         assert!(names.contains(&"url_rewrite"), "url_rewrite should be registered");
+        assert!(names.contains(&"url_sign"), "url_sign should be registered");
         assert!(
             names.contains(&"json_body_field"),
             "json_body_field should be registered"
