@@ -14,7 +14,8 @@ pub use ai::ModelToHeaderFilter;
 pub use observability::{AccessLogFilter, RequestIdFilter};
 pub use payload_processing::{CompressionFilter, JsonBodyFieldFilter, JsonRpcFilter};
 pub use security::{
-    CorsFilter, CredentialInjectionFilter, ForwardedHeadersFilter, GuardrailsAction, GuardrailsFilter, IpAclFilter,
+    CorsFilter, CredentialInjectionFilter, ForwardedHeadersFilter, GuardrailsAction, GuardrailsFilter, HmacVerifyFilter,
+    IpAclFilter, SignedUrlFilter,
 };
 pub use traffic_management::{
     CircuitBreakerFilter, LoadBalancerFilter, RateLimitFilter, RedirectFilter, RouterFilter, StaticResponseFilter,

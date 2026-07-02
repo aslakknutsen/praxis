@@ -9,9 +9,11 @@ mod credential_injection;
 mod forwarded_headers;
 mod guardrails;
 mod ip_acl;
+mod signature;
 
 pub use cors::CorsFilter;
 pub use credential_injection::CredentialInjectionFilter;
 pub use forwarded_headers::ForwardedHeadersFilter;
 pub use guardrails::{GuardrailsAction, GuardrailsFilter};
 pub use ip_acl::IpAclFilter;
+pub use signature::{HmacVerifyFilter, SignedUrlFilter};
