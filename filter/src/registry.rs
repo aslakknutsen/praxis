@@ -110,8 +110,9 @@ impl FilterRegistry {
 fn register_http_builtins(factories: &mut HashMap<String, FilterFactory>) {
     use crate::builtins::{
         AccessLogFilter, CircuitBreakerFilter, CompressionFilter, CorsFilter, CredentialInjectionFilter,
-        ForwardedHeadersFilter, HeaderFilter, IpAclFilter, JsonBodyFieldFilter, JsonRpcFilter, PathRewriteFilter,
-        RateLimitFilter, RedirectFilter, RequestIdFilter, StaticResponseFilter, TimeoutFilter, UrlRewriteFilter,
+        ForwardedHeadersFilter, HeaderFilter, HmacVerifyFilter, IpAclFilter, JsonBodyFieldFilter, JsonRpcFilter,
+        PathRewriteFilter, RateLimitFilter, RedirectFilter, RequestIdFilter, SignedUrlFilter, StaticResponseFilter,
+        TimeoutFilter, UrlRewriteFilter,
     };
 
     register_http(factories, "access_log", AccessLogFilter::from_config);
@@ -126,6 +127,7 @@ fn register_http_builtins(factories: &mut HashMap<String, FilterFactory>) {
     register_http(factories, "headers", HeaderFilter::from_config);
     register_http(factories, "forwarded_headers", ForwardedHeadersFilter::from_config);
     register_http(factories, "guardrails", crate::GuardrailsFilter::from_config);
+    register_http(factories, "hmac_verify", HmacVerifyFilter::from_config);
     register_http(factories, "ip_acl", IpAclFilter::from_config);
     register_http(factories, "load_balancer", crate::LoadBalancerFilter::from_config);
     register_http(factories, "path_rewrite", PathRewriteFilter::from_config);
@@ -133,6 +135,7 @@ fn register_http_builtins(factories: &mut HashMap<String, FilterFactory>) {
     register_http(factories, "redirect", RedirectFilter::from_config);
     register_http(factories, "request_id", RequestIdFilter::from_config);
     register_http(factories, "router", crate::RouterFilter::from_config);
+    register_http(factories, "signed_url", SignedUrlFilter::from_config);
     register_http(factories, "static_response", StaticResponseFilter::from_config);
     register_http(factories, "timeout", TimeoutFilter::from_config);
     register_http(factories, "url_rewrite", UrlRewriteFilter::from_config);
@@ -221,6 +224,7 @@ mod tests {
             "forwarded_headers should be registered"
         );
         assert!(names.contains(&"guardrails"), "guardrails should be registered");
+        assert!(names.contains(&"hmac_verify"), "hmac_verify should be registered");
         assert!(names.contains(&"headers"), "headers should be registered");
         assert!(names.contains(&"ip_acl"), "ip_acl should be registered");
         assert!(names.contains(&"load_balancer"), "load_balancer should be registered");
@@ -229,6 +233,7 @@ mod tests {
         assert!(names.contains(&"redirect"), "redirect should be registered");
         assert!(names.contains(&"request_id"), "request_id should be registered");
         assert!(names.contains(&"router"), "router should be registered");
+        assert!(names.contains(&"signed_url"), "signed_url should be registered");
         assert!(names.contains(&"sni_router"), "sni_router should be registered");
         assert!(
             names.contains(&"static_response"),
