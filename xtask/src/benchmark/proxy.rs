@@ -3,7 +3,9 @@
 
 //! Proxy configuration builders and Docker image management for benchmark runs.
 
-use benchmarks::proxy::{EnvoyConfig, HaproxyConfig, NginxConfig, PraxisConfig, ProxyConfig};
+use benchmarks::proxy::{
+    AgentgatewayConfig, EnvoyConfig, HaproxyConfig, NginxConfig, PraxisConfig, ProxyConfig,
+};
 
 use super::cli::Args;
 
@@ -60,6 +62,10 @@ pub(crate) fn build_proxy_config(name: &str, args: &Args, praxis_image: &str) ->
         }),
         "haproxy" => Box::new(HaproxyConfig {
             image: Some(args.haproxy_image.clone()),
+            ..Default::default()
+        }),
+        "agentgateway" => Box::new(AgentgatewayConfig {
+            image: Some(args.agentgateway_image.clone()),
             ..Default::default()
         }),
         other => {

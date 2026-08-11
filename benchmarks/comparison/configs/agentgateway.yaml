@@ -1,0 +1,18 @@
+# Agentgateway comparison benchmark config.
+#
+# Minimal reverse proxy equivalent to the Praxis/Envoy configs.
+# Routes all traffic to the Fortio echo backend.
+# Uses --network host, so listens directly on the host.
+
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
+binds:
+  - port: 18094
+    listeners:
+      - protocol: HTTP
+        routes:
+          - name: backend
+            matches:
+              - path:
+                  pathPrefix: /
+            backends:
+              - host: 127.0.0.1:18080

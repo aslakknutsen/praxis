@@ -62,7 +62,7 @@ impl ProxyConfig for NginxConfig {
                 "--cpus=4.0".into(),
                 "--memory=2g".into(),
                 "-v".into(),
-                format!("{}:/etc/nginx/nginx.conf:ro", config_abs.display()),
+                format!("{}:/etc/nginx/nginx.conf:ro,z", config_abs.display()),
                 self.image.as_deref().unwrap_or("nginx:alpine").to_owned(),
             ],
         )

@@ -8,7 +8,7 @@ Praxis has two benchmark systems:
 - **Scenario benchmarks**: full proxy benchmarks driven
   by external load generators (Vegeta, Fortio) with
   optional side-by-side comparison against Envoy,
-  NGINX, and HAProxy.
+  NGINX, HAProxy, and Agentgateway.
 
 ## Prerequisites
 
@@ -71,6 +71,7 @@ Eight workload types cover different traffic patterns:
 | `ramp` | Ramp from low to high QPS | Vegeta | `--start-qps`, `--end-qps`, `--step` |
 | `tcp-throughput` | Raw TCP forwarding throughput | Fortio | (none) |
 | `tcp-connection-rate` | TCP connection setup rate (1 conn/req) | Fortio | (none) |
+| `streaming-passthrough` | Long chunked/`text/event-stream` responses; latency = TTFB | built-in streaming client | `--concurrency` (default 100); 20×64B chunks @ 50ms |
 
 ### Running a Single Workload
 
@@ -119,12 +120,13 @@ cargo xtask benchmark \
 
 ## Comparison Benchmarks
 
-Compare Praxis against Envoy, NGINX, and/or HAProxy.
-Each proxy runs inside a Docker container with identical
-resource constraints (4 CPUs, 2GB RAM) against a shared
-Fortio echo backend. Configs are functionally equivalent
-minimal reverse proxies (one listener, one route, one
-upstream).
+Compare Praxis against Envoy, NGINX, HAProxy, and/or
+Agentgateway. Each proxy runs inside a Docker container
+with identical resource constraints (4 CPUs, 2GB RAM)
+against a shared Fortio echo backend (or the paced
+chunk backend for `streaming-passthrough`). Configs are
+functionally equivalent minimal reverse proxies (one
+listener, one route, one upstream).
 
 ### Comprehensive Praxis vs Envoy
 
@@ -210,17 +212,85 @@ cargo xtask benchmark \
     --output results/quick-comparison.yaml
 ```
 
+### Praxis vs Agentgateway
+
+L7 overhead comparison against a pinned Agentgateway
+release (default image `cr.agentgateway.dev/agentgateway:v1.4.1`).
+Do not use a floating `:latest` tag for baselines.
+
+```console
+cargo xtask benchmark \
+    --proxy agentgateway \
+    --agentgateway-image cr.agentgateway.dev/agentgateway:v1.4.1 \
+    --workload high-concurrency-small-requests \
+    --workload large-payloads \
+    --workload tcp-throughput \
+    --concurrency 200 --body-size 131072 \
+    --runs 5 --warmup 15 --duration 60 \
+    --output results/praxis-vs-agw-v1.4.1.yaml
+```
+
+Streaming passthrough (TTFB; not an LLM/MCP protocol
+bakeoff — that requires `praxis-ai`):
+
+```console
+cargo xtask benchmark \
+    --proxy agentgateway \
+    --agentgateway-image cr.agentgateway.dev/agentgateway:v1.4.1 \
+    --workload streaming-passthrough \
+    --concurrency 50 \
+    --runs 3 --warmup 10 --duration 30 \
+    --include-raw-report \
+    --output results/praxis-vs-agw-streaming.yaml
+```
+
+#### Version swap recipes
+
+Pin Agentgateway and swap Praxis images:
+
+```console
+cargo xtask benchmark --proxy agentgateway \
+    --image ghcr.io/praxis-proxy/praxis:<sha-or-tag> \
+    --agentgateway-image cr.agentgateway.dev/agentgateway:v1.4.1 \
+    --workload high-concurrency-small-requests \
+    --workload large-payloads \
+    --workload tcp-throughput \
+    --runs 5 --warmup 15 --duration 60 \
+    --output results/praxis-vs-agw-v1.4.1-$(date +%Y%m%d).yaml
+```
+
+Pin Praxis (local build) and swap Agentgateway:
+
+```console
+cargo xtask benchmark --proxy agentgateway \
+    --agentgateway-image cr.agentgateway.dev/agentgateway:v1.5.0 \
+    --workload high-concurrency-small-requests \
+    --workload large-payloads \
+    --workload tcp-throughput \
+    --runs 5 --warmup 15 --duration 60 \
+    --output results/praxis-vs-agw-v1.5.0.yaml
+```
+
+Regression gate against a saved baseline:
+
+```console
+cargo xtask benchmark compare \
+    results/praxis-vs-agw-v1.4.1-baseline.yaml \
+    results/praxis-vs-agw-v1.4.1-current.yaml \
+    --threshold 0.10
+```
+
 ### Praxis vs All Proxies
 
 ```console
 cargo xtask benchmark \
-    --proxy envoy --proxy nginx --proxy haproxy \
+    --proxy envoy --proxy nginx --proxy haproxy --proxy agentgateway \
     --runs 5 --warmup 15 --duration 60 \
     --output results/all-proxies.yaml
 ```
 
 Praxis is always included automatically. Omitting
-`--workload` runs all eight workloads.
+`--workload` runs all nine workloads.
 
 ### Using Custom Docker Images
 
@@ -236,6 +306,10 @@ cargo xtask benchmark \
     --proxy nginx --proxy haproxy \
     --nginx-image nginx:1.27-alpine \
     --haproxy-image haproxy:3.1
+
+cargo xtask benchmark \
+    --proxy agentgateway \
+    --agentgateway-image cr.agentgateway.dev/agentgateway:v1.4.1
 ```
 
 Default images:
@@ -246,6 +320,7 @@ Default images:
 | Envoy | `envoyproxy/envoy:v1.31-latest` |
 | NGINX | `nginx:alpine` |
 | HAProxy | `haproxy:latest` |
+| Agentgateway | `cr.agentgateway.dev/agentgateway:v1.4.1` |
 
 ### Comparison Configs
 
@@ -260,6 +335,7 @@ same topology: listen on a dedicated port, route
 | Envoy | `envoy.yaml` | 18091 |
 | NGINX | `nginx.conf` | 18092 |
 | HAProxy | `haproxy.cfg` | 18093 |
+| Agentgateway | `agentgateway.yaml` | 18094 |
 
 The Docker Compose file
 (`benchmarks/comparison/docker-compose.yml`) can also
@@ -270,6 +346,8 @@ docker compose -f benchmarks/comparison/docker-compose.yml \
     up -d backend
 docker compose -f benchmarks/comparison/docker-compose.yml \
     up -d envoy
+docker compose -f benchmarks/comparison/docker-compose.yml \
+    up -d agentgateway
 ```
 
 ## Output and Reports
@@ -293,7 +371,9 @@ Each report contains:
   (req/s, bytes/s), errors (non-2xx, timeouts,
   connection failures)
 - **Median selection**: when multiple runs are
-  performed, the median by p99 latency is selected
+  performed, per-metric medians are computed for
+  latency/throughput; resource metrics are taken
+  from the run whose p99 latency is the median
 
 ## Visualization
 
@@ -305,9 +385,9 @@ cargo xtask benchmark visualize report.yaml \
     --output comparison.svg
 ```
 
-Produces two panels: latency percentiles and
-throughput. Proxy colors: Praxis=green, Envoy=blue,
-NGINX=red, HAProxy=purple.
+Produces charts for latency, throughput, CPU, and
+memory. Proxy colors: Praxis=green, Envoy=blue,
+NGINX=red, HAProxy=purple, Agentgateway=orange.
 
 ## Regression Detection
 

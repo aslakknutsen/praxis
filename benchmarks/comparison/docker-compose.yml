@@ -5,13 +5,14 @@
 # a time to avoid contention.
 #
 # Uses host networking for simplicity and ease of use.
+# Volume mounts use `:z` so SELinux hosts can read configs.
 #
 # Usage:
 #   docker compose up -d backend
-#   docker compose up -d praxis   # or envoy, nginx, haproxy
+#   docker compose up -d praxis   # or envoy, nginx, haproxy, agentgateway
 #
 # Normally called via xtask:
-#   cargo xtask benchmark --proxy praxis --proxy envoy --proxy nginx --proxy haproxy
+#   cargo xtask benchmark --proxy praxis --proxy envoy --proxy nginx --proxy haproxy --proxy agentgateway
 
 services:
   backend:
@@ -30,8 +31,7 @@ services:
       context: ../..
       dockerfile: Containerfile
     volumes:
-      - ./configs/praxis.yaml:/etc/praxis/config.yaml:ro
-    command: ["-c", "/etc/praxis/config.yaml"]
+      - ./configs/praxis.yaml:/etc/praxis/config.yaml:ro,z
     deploy:
       resources:
         limits:
@@ -45,7 +45,7 @@ services:
   envoy:
     image: envoyproxy/envoy:v1.31-latest
     volumes:
-      - ./configs/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ./configs/envoy.yaml:/etc/envoy/envoy.yaml:ro,z
     deploy:
       resources:
         limits:
@@ -59,7 +59,7 @@ services:
   nginx:
     image: nginx:alpine
     volumes:
-      - ./configs/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./configs/nginx.conf:/etc/nginx/nginx.conf:ro,z
     deploy:
       resources:
         limits:
@@ -73,7 +73,7 @@ services:
   haproxy:
     image: haproxy:latest
     volumes:
-      - ./configs/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./configs/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro,z
     deploy:
       resources:
         limits:
@@ -81,5 +81,21 @@ services:
           memory: 2G
     ports:
       - "18093:8080"
+    depends_on:
+      - backend
+
+  agentgateway:
+    image: cr.agentgateway.dev/agentgateway:v1.4.1
+    user: "0:0"
+    volumes:
+      - ./configs/agentgateway.yaml:/config.yaml:ro,z
+    command: ["-f", "/config.yaml"]
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 2G
+    ports:
+      - "18094:18094"
     depends_on:
       - backend

@@ -61,6 +61,21 @@ pub enum Workload {
 
     /// TCP connection rate (new connection per request).
     TcpConnectionRate,
+
+    /// Concurrent long chunked responses; latency metrics are TTFB.
+    StreamingPassthrough {
+        /// Number of concurrent client workers.
+        concurrency: u32,
+
+        /// Number of body chunks per response.
+        chunks: u32,
+
+        /// Delay between chunks in milliseconds.
+        chunk_delay_ms: u64,
+
+        /// Size of each chunk in bytes.
+        chunk_size: usize,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -157,6 +172,28 @@ mod tests {
         assert!(
             matches!(w, Workload::TcpConnectionRate),
             "TcpConnectionRate should be a unit variant"
+        );
+    }
+
+    #[test]
+    fn construct_streaming_passthrough() {
+        let w = Workload::StreamingPassthrough {
+            concurrency: 8,
+            chunks: 20,
+            chunk_delay_ms: 50,
+            chunk_size: 64,
+        };
+        assert!(
+            matches!(
+                w,
+                Workload::StreamingPassthrough {
+                    concurrency: 8,
+                    chunks: 20,
+                    chunk_delay_ms: 50,
+                    chunk_size: 64
+                }
+            ),
+            "StreamingPassthrough should store all fields"
         );
     }
 

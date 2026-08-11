@@ -21,6 +21,7 @@ use crate::{
     stats::DockerStatsCollector,
     tools::{
         fortio::{self, FortioConfig, FortioProtocol},
+        streaming::{self, PacedBackend, StreamingConfig},
         vegeta::{self, VegetaConfig},
     },
 };
@@ -29,11 +30,35 @@ use crate::{
 // Runner Constants
 // -----------------------------------------------------------------------------
 
-/// Default port for the Fortio echo backend.
+/// Default port for the Fortio echo / paced-stream backend.
 const DEFAULT_BACKEND_PORT: u16 = 18080;
 
 /// Maximum time to wait for health check readiness.
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(120);
+
+// -----------------------------------------------------------------------------
+// Backend Handle
+// -----------------------------------------------------------------------------
+
+/// Process or in-process backend used for a benchmark run.
+enum BackendHandle {
+    /// External Fortio echo server.
+    Fortio(tokio::process::Child),
+
+    /// In-process paced chunk server for streaming-passthrough.
+    Paced(PacedBackend),
+}
+
+impl BackendHandle {
+    async fn stop(self) {
+        match self {
+            Self::Fortio(mut child) => {
+                let _kill = child.kill().await;
+            },
+            Self::Paced(backend) => backend.stop().await,
+        }
+    }
+}
 
 // -----------------------------------------------------------------------------
 // Runner
@@ -102,10 +127,27 @@ impl Runner {
     pub async fn run(&self, proxy: &dyn ProxyConfig) -> Result<ScenarioResults, BenchmarkError> {
         info!(scenario = %self.scenario.name, proxy = proxy.name(), "starting benchmark run");
 
-        let mut backend = self.start_backend().await?;
-        let mut proxy_proc = self.start_proxy(proxy).await?;
-        self.wait_for_proxy(proxy).await?;
+        let backend = self.start_backend().await?;
+        let mut proxy_proc = match self.start_proxy(proxy).await {
+            Ok(proc) => proc,
+            Err(err) => {
+                backend.stop().await;
+                return Err(err);
+            },
+        };
 
+        if let Err(err) = self.wait_for_proxy(proxy).await {
+            self.cleanup(proxy, &mut proxy_proc, backend).await;
+            return Err(err);
+        }
+
+        let result = self.run_after_ready(proxy).await;
+        self.cleanup(proxy, &mut proxy_proc, backend).await;
+        result
+    }
+
+    /// Warmup, measure, attach resource metrics, and compute the median.
+    async fn run_after_ready(&self, proxy: &dyn ProxyConfig) -> Result<ScenarioResults, BenchmarkError> {
         if !self.scenario.warmup.is_zero() {
             info!(duration = ?self.scenario.warmup, "running warmup");
             self.run_load(proxy, self.scenario.warmup).await?;
@@ -132,19 +174,39 @@ impl Runner {
 
         results.compute_median();
         info!(scenario = %self.scenario.name, "benchmark complete");
-
-        self.cleanup(proxy, &mut proxy_proc, &mut backend).await;
         Ok(results)
     }
 
-    /// Start the Fortio echo backend.
-    async fn start_backend(&self) -> Result<tokio::process::Child, BenchmarkError> {
-        info!(port = self.backend_port, "starting Fortio echo backend");
-        let backend = fortio::start_echo_server(self.backend_port)?;
-        let port = self.backend_port;
-        wait_for_tcp(&format!("127.0.0.1:{port}"), HEALTH_TIMEOUT).await?;
-        info!(port = self.backend_port, "backend started");
-        Ok(backend)
+    /// Start the echo or paced-stream backend for this scenario.
+    async fn start_backend(&self) -> Result<BackendHandle, BenchmarkError> {
+        match &self.scenario.workload {
+            Workload::StreamingPassthrough {
+                chunks,
+                chunk_delay_ms,
+                chunk_size,
+                ..
+            } => {
+                info!(port = self.backend_port, "starting paced chunk backend");
+                let backend = streaming::start_paced_backend(
+                    self.backend_port,
+                    *chunks,
+                    Duration::from_millis(*chunk_delay_ms),
+                    *chunk_size,
+                )
+                .await?;
+                wait_for_tcp(&format!("127.0.0.1:{}", self.backend_port), HEALTH_TIMEOUT).await?;
+                info!(port = self.backend_port, "paced backend started");
+                Ok(BackendHandle::Paced(backend))
+            },
+            _ => {
+                info!(port = self.backend_port, "starting Fortio echo backend");
+                let backend = fortio::start_echo_server(self.backend_port)?;
+                let port = self.backend_port;
+                wait_for_tcp(&format!("127.0.0.1:{port}"), HEALTH_TIMEOUT).await?;
+                info!(port = self.backend_port, "backend started");
+                Ok(BackendHandle::Fortio(backend))
+            },
+        }
     }
 
     /// Start the proxy process, cleaning up stale containers first.
@@ -201,14 +263,14 @@ impl Runner {
         &self,
         proxy: &dyn ProxyConfig,
         proxy_proc: &mut tokio::process::Child,
-        backend: &mut tokio::process::Child,
+        backend: BackendHandle,
     ) {
         info!(scenario = %self.scenario.name, "cleaning up proxy and backend");
         if let Some(name) = proxy.container_name() {
             stop_container(name).await;
         }
         let _kill_proxy = proxy_proc.kill().await;
-        let _kill_backend = backend.kill().await;
+        backend.stop().await;
     }
 
     /// Run load generation for a single measurement window.
@@ -225,6 +287,9 @@ impl Runner {
         match &self.scenario.workload {
             Workload::TcpThroughput | Workload::TcpConnectionRate | Workload::HighConnectionCount { .. } => {
                 fortio::parse(json, &self.scenario.name, proxy_name, &self.commit, raw)
+            },
+            Workload::StreamingPassthrough { .. } => {
+                streaming::parse(json, &self.scenario.name, proxy_name, &self.commit, raw)
             },
             _ => vegeta::parse(json, &self.scenario.name, proxy_name, &self.commit, raw),
         }
@@ -265,6 +330,24 @@ async fn dispatch_workload(
         },
         Workload::TcpThroughput => fortio::run(&fortio_config(addr, FortioProtocol::Tcp, 8, duration)).await,
         Workload::TcpConnectionRate => fortio::run(&fortio_config(addr, FortioProtocol::Tcp, 1, duration)).await,
+        Workload::StreamingPassthrough {
+            concurrency,
+            chunks,
+            chunk_delay_ms,
+            chunk_size,
+        } => {
+            streaming::run(
+                url,
+                &StreamingConfig {
+                    concurrency: (*concurrency).max(1),
+                    chunks: (*chunks).max(1),
+                    chunk_delay: Duration::from_millis(*chunk_delay_ms),
+                    chunk_size: (*chunk_size).max(1),
+                    duration,
+                },
+            )
+            .await
+        },
     }
 }
 

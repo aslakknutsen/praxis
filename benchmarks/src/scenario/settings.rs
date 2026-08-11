@@ -70,6 +70,17 @@ fn workload_params(workload: &Workload) -> BTreeMap<String, serde_json::Value> {
             params.insert("end_qps".into(), (*end_qps).into());
             params.insert("step".into(), (*step).into());
         },
+        Workload::StreamingPassthrough {
+            concurrency,
+            chunks,
+            chunk_delay_ms,
+            chunk_size,
+        } => {
+            params.insert("concurrency".into(), (*concurrency).into());
+            params.insert("chunks".into(), (*chunks).into());
+            params.insert("chunk_delay_ms".into(), (*chunk_delay_ms).into());
+            params.insert("chunk_size".into(), (*chunk_size).into());
+        },
         Workload::Sustained | Workload::TcpThroughput | Workload::TcpConnectionRate => {},
     }
     params
@@ -182,6 +193,29 @@ mod tests {
             let params = workload_params(&workload);
             assert!(params.is_empty(), "{workload:?} should emit no params");
         }
+    }
+
+    #[test]
+    fn workload_params_streaming_passthrough() {
+        let params = workload_params(&Workload::StreamingPassthrough {
+            concurrency: 8,
+            chunks: 20,
+            chunk_delay_ms: 50,
+            chunk_size: 64,
+        });
+        assert_eq!(
+            params.get("concurrency").and_then(serde_json::Value::as_u64),
+            Some(8)
+        );
+        assert_eq!(params.get("chunks").and_then(serde_json::Value::as_u64), Some(20));
+        assert_eq!(
+            params.get("chunk_delay_ms").and_then(serde_json::Value::as_u64),
+            Some(50)
+        );
+        assert_eq!(
+            params.get("chunk_size").and_then(serde_json::Value::as_u64),
+            Some(64)
+        );
     }
 
     #[test]

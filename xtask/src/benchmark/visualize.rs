@@ -186,6 +186,7 @@ fn proxy_color(name: &str) -> plotters::style::RGBColor {
         "envoy" => plotters::style::RGBColor(33, 150, 243),
         "nginx" => plotters::style::RGBColor(244, 67, 54),
         "haproxy" => plotters::style::RGBColor(156, 39, 176),
+        "agentgateway" => plotters::style::RGBColor(255, 152, 0),
         _ => plotters::style::RGBColor(158, 158, 158),
     }
 }

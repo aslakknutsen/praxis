@@ -23,6 +23,7 @@ const ALL_WORKLOADS: &[&str] = &[
     "ramp",
     "tcp-throughput",
     "tcp-connection-rate",
+    "streaming-passthrough",
 ];
 
 // -----------------------------------------------------------------------------
@@ -110,6 +111,12 @@ fn parse_workload(name: &str, args: &Args) -> Workload {
         },
         "tcp-throughput" => Workload::TcpThroughput,
         "tcp-connection-rate" => Workload::TcpConnectionRate,
+        "streaming-passthrough" => Workload::StreamingPassthrough {
+            concurrency: args.concurrency,
+            chunks: 20,
+            chunk_delay_ms: 50,
+            chunk_size: 64,
+        },
         other => {
             eprintln!(
                 "error: unknown workload '{other}'\n\nvalid workloads: {}",
@@ -164,6 +171,6 @@ mod tests {
 
     #[test]
     fn all_workloads_constant_has_expected_count() {
-        assert_eq!(ALL_WORKLOADS.len(), 8, "ALL_WORKLOADS should have 8 entries");
+        assert_eq!(ALL_WORKLOADS.len(), 9, "ALL_WORKLOADS should have 9 entries");
     }
 }

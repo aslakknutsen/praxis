@@ -20,7 +20,7 @@ pub(crate) struct Args {
     pub command: Option<BenchmarkCommand>,
 
     /// Proxies to benchmark (repeatable). Praxis is always
-    /// included. Values: praxis, envoy, nginx, haproxy.
+    /// included. Values: praxis, envoy, nginx, haproxy, agentgateway.
     #[arg(long = "proxy", default_value = "praxis")]
     pub proxies: Vec<String>,
 
@@ -40,10 +40,15 @@ pub(crate) struct Args {
     #[arg(long, default_value = "haproxy:latest")]
     pub haproxy_image: String,
 
+    /// Agentgateway Docker image override.
+    #[arg(long, default_value = "cr.agentgateway.dev/agentgateway:v1.4.1")]
+    pub agentgateway_image: String,
+
     /// Workloads to run (repeatable). Default: all.
     /// Values: high-concurrency-small-requests, large-payloads,
     /// large-payloads-high-concurrency, high-connection-count,
-    /// sustained, ramp, tcp-throughput, tcp-connection-rate.
+    /// sustained, ramp, tcp-throughput, tcp-connection-rate,
+    /// streaming-passthrough.
     #[arg(long = "workload")]
     pub workloads: Vec<String>,
 

@@ -312,7 +312,7 @@ impl ScenarioResults {
             environment: first.environment.clone(),
             latency: median_latency(&self.runs),
             throughput: median_throughput(&self.runs),
-            resource: None,
+            resource: median_resource(&self.runs),
             errors: ErrorMetrics {
                 non_2xx: None,
                 timeouts: 0,
@@ -430,6 +430,27 @@ fn median_throughput(runs: &[BenchmarkResult]) -> ThroughputMetrics {
         requests_per_sec: f64_median(runs.iter().map(|r| r.throughput.requests_per_sec)),
         bytes_per_sec: f64_median(runs.iter().map(|r| r.throughput.bytes_per_sec)),
     }
+}
+
+/// Copy resource metrics from the run whose p99 latency is the median.
+///
+/// Resource samples are attached identically across runs by the runner,
+/// but selecting the p99-median run keeps median selection consistent
+/// when per-run resource values diverge.
+fn median_resource(runs: &[BenchmarkResult]) -> Option<ResourceMetrics> {
+    if runs.is_empty() {
+        return None;
+    }
+
+    let mut by_p99: Vec<&BenchmarkResult> = runs.iter().collect();
+    by_p99.sort_by(|a, b| {
+        a.latency
+            .p99
+            .partial_cmp(&b.latency.p99)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mid = by_p99.len() / 2;
+    by_p99.get(mid).and_then(|r| r.resource.clone())
 }
 
 /// Extract p99 and rps from a median result.
@@ -760,6 +781,45 @@ mod tests {
             (median.throughput.requests_per_sec - 7500.0).abs() < 1e-9,
             "median rps should be 7500.0"
         );
+    }
+
+    #[test]
+    fn compute_median_preserves_resource_from_p99_median_run() {
+        let mut low = sample_result(0.010, 10_000.0);
+        low.resource = Some(ResourceMetrics {
+            cpu_percent_avg: 10.0,
+            cpu_percent_peak: 20.0,
+            memory_rss_bytes_avg: 100,
+            memory_rss_bytes_peak: 200,
+        });
+        let mut mid = sample_result(0.015, 7500.0);
+        mid.resource = Some(ResourceMetrics {
+            cpu_percent_avg: 40.0,
+            cpu_percent_peak: 50.0,
+            memory_rss_bytes_avg: 400,
+            memory_rss_bytes_peak: 500,
+        });
+        let mut high = sample_result(0.020, 5000.0);
+        high.resource = Some(ResourceMetrics {
+            cpu_percent_avg: 90.0,
+            cpu_percent_peak: 95.0,
+            memory_rss_bytes_avg: 900,
+            memory_rss_bytes_peak: 950,
+        });
+
+        let mut results = ScenarioResults {
+            scenario: "test".into(),
+            proxy: "praxis".into(),
+            runs: vec![high, low, mid],
+            median: None,
+        };
+        results.compute_median();
+        let resource = results.median.as_ref().unwrap().resource.as_ref().unwrap();
+        assert!(
+            (resource.cpu_percent_avg - 40.0).abs() < 1e-9,
+            "resource should come from the p99-median run"
+        );
+        assert_eq!(resource.memory_rss_bytes_peak, 500);
     }
 
     #[test]

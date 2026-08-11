@@ -62,7 +62,7 @@ impl ProxyConfig for HaproxyConfig {
                 "--cpus=4.0".into(),
                 "--memory=2g".into(),
                 "-v".into(),
-                format!("{}:/usr/local/etc/haproxy/haproxy.cfg:ro", config_abs.display()),
+                format!("{}:/usr/local/etc/haproxy/haproxy.cfg:ro,z", config_abs.display()),
                 self.image.as_deref().unwrap_or("haproxy:latest").to_owned(),
             ],
         )

@@ -64,7 +64,7 @@ impl ProxyConfig for EnvoyConfig {
                 "--cpus=4.0".into(),
                 "--memory=2g".into(),
                 "-v".into(),
-                format!("{}:/etc/envoy/envoy.yaml:ro", config_abs.display()),
+                format!("{}:/etc/envoy/envoy.yaml:ro,z", config_abs.display()),
                 self.image
                     .as_deref()
                     .unwrap_or("envoyproxy/envoy:v1.31-latest")

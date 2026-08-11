@@ -75,7 +75,7 @@ impl ProxyConfig for PraxisConfig {
                 "--cpus=4.0".into(),
                 "--memory=2g".into(),
                 "-v".into(),
-                format!("{}:/etc/praxis/config.yaml:ro", config_abs.display()),
+                format!("{}:/etc/praxis/config.yaml:ro,z", config_abs.display()),
                 self.image.clone(),
             ],
         )

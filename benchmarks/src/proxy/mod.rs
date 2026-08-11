@@ -3,6 +3,7 @@
 
 //! Proxy configuration trait and built-in implementations.
 
+mod agentgateway;
 mod envoy;
 mod haproxy;
 mod nginx;
@@ -10,6 +11,7 @@ mod praxis;
 
 use std::path::Path;
 
+pub use agentgateway::AgentgatewayConfig;
 pub use envoy::EnvoyConfig;
 pub use haproxy::HaproxyConfig;
 pub use nginx::NginxConfig;
