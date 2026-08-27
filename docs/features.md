@@ -77,6 +77,12 @@
   payload scanning, content classification).
   See the [payload processing][payload-processing]
   docs for the full body access model.
+- **JSON body rewrite**: the built-in `json_body` filter
+  applies JSON Pointer add, remove, and replace operations
+  to request and response bodies without building a JSON
+  DOM. Request `Content-Length` is repaired; response
+  growth is refused because headers are already on the
+  wire.
 - **Body-based routing**: the built-in `json_body_field`
   filter extracts top-level fields from JSON request
   bodies and promotes values to request headers, enabling

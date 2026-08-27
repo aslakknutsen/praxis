@@ -1,0 +1,50 @@
+# JSON Body Pointer Rewrite
+#
+# Rewrites a JSON request body with JSON Pointer extract, replace, add, and remove.
+#
+# Usage:
+#   cargo run -p praxis-proxy -- -c examples/configs/payload-processing/json-body.yaml
+#
+#   curl -X POST http://localhost:8080/v1/chat \
+#     -H "Content-Type: application/json" \
+#     -d '{"model":"old","secret":"s3cret","prompt":"hi"}'
+#
+# The upstream sees model=forced-model, original_model=old, tenant=acme, and no secret.
+
+listeners:
+  - name: default
+    address: "127.0.0.1:8080"
+    filter_chains:
+      - rewrite
+
+filter_chains:
+  - name: rewrite
+    filters:
+      - filter: json_body
+        request_extract:
+          - pointer: /model
+            metadata: original.model
+        request_replace:
+          - pointer: /model
+            value: forced-model
+        request_add:
+          - pointer: /tenant
+            value: acme
+          - pointer: /original_model
+            metadata: original.model
+        request_remove:
+          - /secret
+
+      - filter: router
+        routes:
+          - path_prefix: "/"
+            cluster: echo
+
+      - filter: load_balancer
+        clusters:
+          - name: echo
+            endpoints:
+              - "127.0.0.1:3000"
+
+insecure_options:
+  allow_private_endpoints: true # example proxies to local backends
