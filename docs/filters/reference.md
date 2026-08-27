@@ -19,6 +19,7 @@ Built-in filters organized by protocol and category.
 |--------|---------|-------------|
 | [`compression`](http/payload_processing/compression.md) | - | Enables Pingora's built-in response compression when present in a filter chain. |
 | [`grpc_web`](http/payload_processing/grpc_web.md) | - | Translates gRPC-Web calls to native gRPC and back. |
+| [`json_body`](http/payload_processing/json_body.md) | - | Rewrites JSON request and response bodies using JSON Pointer add, remove, replace, and extract. |
 | [`json_body_field`](http/payload_processing/json_body_field.md) | - | Extracts top-level fields from a JSON request body and promotes their values to request headers using [`StreamBuffer`] mode. |
 | [`json_rpc`](http/payload_processing/json_rpc.md) | - | Extracts JSON-RPC 2.0 envelope metadata from request bodies and promotes method, id, and kind to request headers and filter results for routing. |
 
