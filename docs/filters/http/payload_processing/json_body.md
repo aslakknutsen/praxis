@@ -7,9 +7,9 @@ Rewrites JSON request and response bodies using JSON Pointer add, remove, replac
 
 ## Configuration Notes
 
-Applies mutating operations in one pass over a `StreamBuffer`-held body. Extract copies a pointer's JSON into `filter_metadata` or structured metadata without changing the body. `filter_metadata` values over 256 bytes are dropped; use structured metadata for nested or larger values. Mutating pointers must not overlap (equal or prefix) within a direction. Duplicate extract pointers are rejected; nested extract pointers are allowed. Missing parents, missing replace/extract targets, and missing context values skip that operation. Invalid JSON follows [`on_invalid`].
+Applies mutating operations in one pass over a `StreamBuffer`-held body. Extract copies a pointer's JSON into `filter_metadata` or structured metadata without changing the body. `filter_metadata` values over 256 bytes are dropped; use structured metadata for nested or larger values. Mutating pointers must not overlap (equal or prefix) within a direction. Duplicate extract pointers are rejected; nested extract pointers are allowed. Unused subtrees are copied as byte spans. Missing parents, missing replace/extract targets, and missing context values skip that operation. Invalid JSON follows [`on_invalid`].
 
-Extract-only directions are `ReadOnly` and stop walking once every configured extract pointer is found. Mixed extract and rewrite waits for end-of-stream, writes extracts into context, then applies mutating ops (so an add can consume a value extracted in the same filter).
+Extract-only directions are `ReadOnly` and stop walking once every configured extract pointer is found. Mixed extract and rewrite uses one walk; metadata-sourced add/replace resolve lazily at each splice site and are skipped when the extract value is not yet available.
 
 Response `Content-Length` is already committed when body hooks run. Shrinking responses are padded with trailing spaces; growth is refused and the original body is forwarded.
 

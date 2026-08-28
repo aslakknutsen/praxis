@@ -222,9 +222,36 @@ fn nested_replace() {
 }
 
 #[test]
+fn unused_nested_object_and_array_are_copied() {
+    let out = rewrite_str(
+        r#"{"model":"old","obj":{"id":1,"tag":"bench"},"arr":["a","b","0"]}"#,
+        &[
+            resolved(OpKind::Replace, "/model", Some(r#""forced""#)),
+            resolved(OpKind::Add, "/tenant", Some(r#""acme""#)),
+        ],
+    )
+    .unwrap();
+    let got: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        got,
+        json!({"model":"forced","obj":{"id":1,"tag":"bench"},"arr":["a","b","0"],"tenant":"acme"})
+    );
+}
+
+#[test]
 fn escaped_pointer_key() {
     let out = rewrite_str(r#"{"a/b":1}"#, &[resolved(OpKind::Replace, "/a~1b", Some("2"))]).unwrap();
     assert_eq!(out, r#"{"a/b":2}"#);
+}
+
+#[test]
+fn escaped_key_extract_and_replace() {
+    let out = rewrite_str(
+        r#"{"a/b":{"x":1},"keep":true}"#,
+        &[resolved(OpKind::Replace, "/a~1b/x", Some("2"))],
+    )
+    .unwrap();
+    assert_eq!(out, r#"{"a/b":{"x":2},"keep":true}"#);
 }
 
 #[test]
@@ -632,6 +659,31 @@ async fn extract_object_to_structured_metadata() {
 }
 
 #[tokio::test]
+async fn nested_extract_walks_parent() {
+    let filter = parse_filter(
+        r#"
+        request_extract:
+          - pointer: /user
+            structured_metadata:
+              namespace: ext
+              key: user
+          - pointer: /user/id
+            metadata: user.id
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body = Some(Bytes::from_static(br#"{"user":{"id":1,"n":2}}"#));
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(matches!(action, FilterAction::BodyDone));
+    assert_eq!(
+        ctx.get_structured_metadata("ext", "user"),
+        Some(&json!({"id": 1, "n": 2}))
+    );
+    assert_eq!(ctx.get_metadata("user.id"), Some("1"));
+}
+
+#[tokio::test]
 async fn extract_missing_pointer_skips() {
     let filter = parse_filter(
         r#"
@@ -740,4 +792,70 @@ async fn extract_oversized_metadata_is_skipped() {
     let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
     assert!(matches!(action, FilterAction::BodyDone));
     assert!(ctx.get_metadata("big").is_none(), "256-byte metadata cap");
+}
+
+#[tokio::test]
+async fn metadata_add_skipped_when_extract_late_in_wire_order() {
+    let filter = parse_filter(
+        r#"
+        request_extract:
+          - pointer: /model
+            metadata: original.model
+        request_add:
+          - pointer: /meta/extra
+            metadata: original.model
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body = Some(Bytes::from_static(br#"{"meta":{},"model":"old"}"#));
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(matches!(action, FilterAction::BodyDone));
+    assert_eq!(ctx.get_metadata("original.model"), Some("old"));
+    let got = serde_json::from_slice::<serde_json::Value>(body.as_ref().unwrap()).unwrap();
+    assert_eq!(got, json!({"meta": {}, "model": "old"}));
+}
+
+#[tokio::test]
+async fn same_key_extract_before_replace() {
+    let filter = parse_filter(
+        r#"
+        request_extract:
+          - pointer: /model
+            metadata: original.model
+        request_replace:
+          - pointer: /model
+            value: forced-model
+        request_add:
+          - pointer: /original_model
+            metadata: original.model
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body = Some(Bytes::from_static(br#"{"model":"old"}"#));
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(matches!(action, FilterAction::BodyDone));
+    assert_eq!(ctx.get_metadata("original.model"), Some("old"));
+    let got = serde_json::from_slice::<serde_json::Value>(body.as_ref().unwrap()).unwrap();
+    assert_eq!(got, json!({"model": "forced-model", "original_model": "old"}));
+}
+
+#[tokio::test]
+async fn external_metadata_still_works() {
+    let filter = parse_filter(
+        r#"
+        request_add:
+          - pointer: /tenant
+            metadata: tenant.id
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    ctx.set_metadata("tenant.id".to_owned(), "acme".to_owned());
+    let mut body = Some(Bytes::from_static(br#"{"n":1}"#));
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(matches!(action, FilterAction::BodyDone));
+    let got = serde_json::from_slice::<serde_json::Value>(body.as_ref().unwrap()).unwrap();
+    assert_eq!(got, json!({"n": 1, "tenant": "acme"}));
 }

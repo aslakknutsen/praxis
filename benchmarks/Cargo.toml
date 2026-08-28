@@ -19,6 +19,7 @@ workspace = true
 
 [dependencies]
 chrono = { workspace = true }
+dhat = { version = "0.3.3", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

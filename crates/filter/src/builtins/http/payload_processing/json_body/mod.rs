@@ -4,11 +4,15 @@
 //! Rewrites JSON request and response bodies using JSON Pointer
 //! add/remove/replace, and copies pointer values into request context.
 //!
-//! Walks the document with a path-stack tokenizer (no JSON DOM). Values are
-//! resolved from static YAML or filter context before the walk. Request
-//! `Content-Length` is repaired by `StreamBuffer`; response growth is refused
-//! because headers are already on the wire. Extract-only directions use
-//! `BodyAccess::ReadOnly` and stop walking once every extract pointer is found.
+//! Walks the document with a path-stack tokenizer (no JSON DOM). Unused
+//! subtrees are copied as byte spans. Values are resolved from static YAML or
+//! filter context during the walk. Request `Content-Length` is repaired by
+//! `StreamBuffer`; response growth is refused because headers are already on
+//! the wire. Extract-only directions use `BodyAccess::ReadOnly` and stop
+//! walking once every extract pointer is found.
+
+#[cfg(feature = "bench-internals")]
+pub mod bench;
 
 mod config;
 mod pointer;
@@ -32,8 +36,8 @@ use bytes::Bytes;
 use tracing::warn;
 
 use self::{
-    config::{CompiledOp, CompiledOps, JsonBodyConfig, ValueSource, build_ops},
-    rewrite::{ExtractDest, ExtractOp, ExtractedValue, OpKind, ResolvedOp, extract, rewrite},
+    config::{CompiledOp, CompiledOps, JsonBodyConfig, build_ops},
+    rewrite::{RewriteMode, rewrite_document},
 };
 use crate::{
     FilterAction, FilterError, Rejection,
@@ -55,13 +59,14 @@ use crate::{
 /// bytes are dropped; use structured metadata for nested or larger values.
 /// Mutating pointers must not overlap (equal or prefix) within a direction.
 /// Duplicate extract pointers are rejected; nested extract pointers are allowed.
-/// Missing parents, missing replace/extract targets, and missing context values
-/// skip that operation. Invalid JSON follows [`on_invalid`].
+/// Unused subtrees are copied as byte spans. Missing parents, missing
+/// replace/extract targets, and missing context values skip that operation.
+/// Invalid JSON follows [`on_invalid`].
 ///
 /// Extract-only directions are `ReadOnly` and stop walking once every
-/// configured extract pointer is found. Mixed extract and rewrite waits for
-/// end-of-stream, writes extracts into context, then applies mutating ops
-/// (so an add can consume a value extracted in the same filter).
+/// configured extract pointer is found. Mixed extract and rewrite uses one
+/// walk; metadata-sourced add/replace resolve lazily at each splice site and
+/// are skipped when the extract value is not yet available.
 ///
 /// Response `Content-Length` is already committed when body hooks run.
 /// Shrinking responses are padded with trailing spaces; growth is refused
@@ -224,7 +229,7 @@ enum FitMode {
 #[expect(
     clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "extract-then-rewrite is one request-path"
+    reason = "framing policy is part of the rewrite apply path"
 )]
 fn apply_rewrite(
     ops: &[CompiledOp],
@@ -242,21 +247,16 @@ fn apply_rewrite(
         return handle_invalid(on_invalid, "empty body");
     };
 
-    let extract_ops = extract_ops(ops);
-    if !extract_ops.is_empty() {
-        match extract(original, &extract_ops) {
-            Ok(captures) => write_captures(ctx, captures),
-            Err(_err) if extract_only(ops) && !end_of_stream => return Ok(FilterAction::Continue),
-            Err(err) => return handle_invalid(on_invalid, err.as_str()),
-        }
-        if extract_only(ops) {
-            return Ok(FilterAction::BodyDone);
-        }
-    }
+    let mode = if extract_only(ops) {
+        RewriteMode::ExtractOnly
+    } else {
+        RewriteMode::Rewrite
+    };
 
-    let resolved = resolve_ops(ops, ctx);
-    match rewrite(original, &resolved) {
-        Ok(rewritten) => {
+    match rewrite_document(original, ops, mode, Some(ctx)) {
+        Ok(_outcome) if mode == RewriteMode::ExtractOnly => Ok(FilterAction::BodyDone),
+        Ok(outcome) => {
+            let rewritten = outcome.output.unwrap_or_default();
             match fit {
                 FitMode::Request => *body = Some(Bytes::from(rewritten)),
                 FitMode::Response => match fit_response(original.len(), rewritten) {
@@ -271,6 +271,7 @@ fn apply_rewrite(
             }
             Ok(FilterAction::BodyDone)
         },
+        Err(_err) if mode == RewriteMode::ExtractOnly && !end_of_stream => Ok(FilterAction::Continue),
         Err(err) => handle_invalid(on_invalid, err.as_str()),
     }
 }
@@ -288,47 +289,8 @@ fn direction_access(ops: &[CompiledOp]) -> BodyAccess {
 
 /// Whether every op in this direction is extract.
 fn extract_only(ops: &[CompiledOp]) -> bool {
+    use self::rewrite::OpKind;
     !ops.is_empty() && ops.iter().all(|op| op.kind == OpKind::Extract)
-}
-
-/// Compiled extract ops for the tokenizer walk.
-fn extract_ops(ops: &[CompiledOp]) -> Vec<ExtractOp> {
-    ops.iter()
-        .filter(|op| op.kind == OpKind::Extract)
-        .filter_map(|op| {
-            op.dest.clone().map(|dest| ExtractOp {
-                tokens: op.tokens.clone(),
-                dest,
-            })
-        })
-        .collect()
-}
-
-/// Write captured JSON spans into context.
-fn write_captures(ctx: &mut HttpFilterContext<'_>, captures: Vec<ExtractedValue>) {
-    for capture in captures {
-        match capture.dest {
-            ExtractDest::Metadata(key) => {
-                if let Some(text) = metadata_text(&capture.json) {
-                    ctx.set_metadata(key, text);
-                }
-            },
-            ExtractDest::Structured { namespace, key } => {
-                if let Ok(value) = serde_json::from_slice(&capture.json) {
-                    ctx.set_structured_metadata(&namespace, &key, value);
-                }
-            },
-        }
-    }
-}
-
-/// JSON string → decoded text; any other value → exact source span.
-fn metadata_text(json: &[u8]) -> Option<String> {
-    if json.first() == Some(&b'"') {
-        serde_json::from_slice(json).ok()
-    } else {
-        String::from_utf8(json.to_vec()).ok()
-    }
 }
 
 /// Map a parse/rewrite failure to `on_invalid`.
@@ -354,36 +316,4 @@ fn fit_response(original_len: usize, rewritten: Vec<u8>) -> Option<Bytes> {
             Some(Bytes::from(padded))
         },
     }
-}
-
-/// Resolve static/context values; drop add/replace ops whose context is missing.
-fn resolve_ops(ops: &[CompiledOp], ctx: &HttpFilterContext<'_>) -> Vec<ResolvedOp> {
-    ops.iter().filter_map(|op| resolve_one(op, ctx)).collect()
-}
-
-/// Resolve one compiled mutating op, or `None` when a context value is missing.
-fn resolve_one(op: &CompiledOp, ctx: &HttpFilterContext<'_>) -> Option<ResolvedOp> {
-    if op.kind == OpKind::Extract {
-        return None;
-    }
-    let payload = match &op.source {
-        None => None,
-        Some(ValueSource::Static(bytes)) => Some(bytes.clone()),
-        Some(ValueSource::Metadata(key)) => {
-            let text = ctx.get_metadata(key)?;
-            serde_json::to_vec(text).ok().map(Bytes::from)
-        },
-        Some(ValueSource::Structured { namespace, key }) => {
-            let value = ctx.get_structured_metadata(namespace, key)?;
-            serde_json::to_vec(value).ok().map(Bytes::from)
-        },
-    };
-    if matches!(op.kind, OpKind::Add | OpKind::Replace) && payload.is_none() {
-        return None;
-    }
-    Some(ResolvedOp {
-        tokens: op.tokens.clone(),
-        kind: op.kind,
-        payload,
-    })
 }
