@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Praxis Contributors
+
+//! Heap allocation totals for `json_body` tokenizer vs DOM reference.
+//!
+//! Run:
+//! ```console
+//! cargo bench -p praxis-tests-benches --bench json_body_heap --features dhat-heap
+//! ```
+
+#![expect(
+    clippy::min_ident_chars,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "benchmarks"
+)]
+
+mod json_body_workload;
+
+use json_body_workload::{
+    BODY_SIZES, BodyLayout, assert_all_layouts_equivalent, body_for_layout, dom_apply_request,
+    tokenizer_apply,
+};
+
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
+const ITERATIONS: usize = 20;
+
+fn main() {
+    assert_all_layouts_equivalent();
+    println!("layout\tpath\tsize\titerations\ttotal_bytes\tmax_bytes");
+    for layout in [BodyLayout::Prefix, BodyLayout::Spread] {
+        let layout_name = layout_label(layout);
+        for &(label, _) in BODY_SIZES {
+            let body = body_for_layout(layout, label);
+            bench_path(layout_name, "tokenizer", label, body, tokenizer_apply);
+            bench_path(layout_name, "dom", label, body, dom_apply_request);
+        }
+    }
+}
+
+fn layout_label(layout: BodyLayout) -> &'static str {
+    match layout {
+        BodyLayout::Prefix => "prefix",
+        BodyLayout::Spread => "spread",
+    }
+}
+
+fn bench_path<F>(layout: &str, path: &str, label: &str, body: &[u8], mut apply: F)
+where
+    F: FnMut(&[u8]) -> Vec<u8>,
+{
+    let _profiler = dhat::Profiler::new_heap();
+    for _ in 0..ITERATIONS {
+        drop(apply(body));
+    }
+    let stats = dhat::HeapStats::get();
+    println!(
+        "{layout}\t{path}\t{label}\t{ITERATIONS}\t{}\t{}",
+        stats.total_bytes, stats.max_bytes
+    );
+}

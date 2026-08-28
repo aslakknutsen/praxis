@@ -11,6 +11,9 @@ autobenches = false
 [lints]
 workspace = true
 
+[dependencies]
+dhat = { version = "0.3.3", optional = true }
+
 [dev-dependencies]
 criterion = { workspace = true }
 governor = { workspace = true }
@@ -18,7 +21,8 @@ http = { workspace = true }
 parking_lot = { workspace = true }
 portable-atomic = { workspace = true }
 praxis-core = { workspace = true }
-praxis-filter = { workspace = true }
+praxis-filter = { workspace = true, features = ["bench-internals"] }
+serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "net", "time"] }
 
@@ -43,6 +47,17 @@ path = "benches/headers.rs"
 harness = false
 
 [[bench]]
+name = "json_body"
+path = "benches/json_body.rs"
+harness = false
+
+[[bench]]
+name = "json_body_heap"
+path = "benches/json_body_heap.rs"
+harness = false
+required-features = ["dhat-heap"]
+
+[[bench]]
 name = "load_balancer"
 path = "benches/load_balancer.rs"
 harness = false
@@ -62,3 +77,4 @@ harness = false
 # stays lean; `make test-integration` builds these with --all-features.
 [features]
 policy-engine = ["praxis-filter/policy-engine"]
+dhat-heap = ["dep:dhat"]
