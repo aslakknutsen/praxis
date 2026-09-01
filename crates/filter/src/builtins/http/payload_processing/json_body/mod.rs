@@ -15,8 +15,11 @@
 pub mod bench;
 
 mod config;
+mod error;
+mod index;
 mod pointer;
 mod rewrite;
+mod skip;
 
 #[cfg(test)]
 #[expect(clippy::allow_attributes, reason = "blanket test suppressions")]
@@ -36,7 +39,7 @@ use bytes::Bytes;
 use tracing::warn;
 
 use self::{
-    config::{CompiledOp, CompiledOps, JsonBodyConfig, build_ops},
+    config::{CompiledOp, CompiledOpSet, CompiledOps, JsonBodyConfig, build_ops},
     rewrite::{RewriteMode, rewrite_document},
 };
 use crate::{
@@ -117,9 +120,9 @@ pub struct JsonBodyFilter {
     /// Behavior when the body is not valid JSON.
     on_invalid: OnInvalidBehavior,
     /// Compiled request-body operations.
-    request_ops: Vec<CompiledOp>,
+    request_ops: CompiledOpSet,
     /// Compiled response-body operations.
-    response_ops: Vec<CompiledOp>,
+    response_ops: CompiledOpSet,
 }
 
 impl JsonBodyFilter {
@@ -150,11 +153,11 @@ impl HttpFilter for JsonBodyFilter {
     }
 
     fn request_body_access(&self) -> BodyAccess {
-        direction_access(&self.request_ops)
+        direction_access(&self.request_ops.ops)
     }
 
     fn response_body_access(&self) -> BodyAccess {
-        direction_access(&self.response_ops)
+        direction_access(&self.response_ops.ops)
     }
 
     fn request_body_mode(&self) -> BodyMode {
@@ -179,7 +182,7 @@ impl HttpFilter for JsonBodyFilter {
         body: &mut Option<Bytes>,
         end_of_stream: bool,
     ) -> Result<FilterAction, FilterError> {
-        if !extract_only(&self.request_ops) && !end_of_stream {
+        if !extract_only(&self.request_ops.ops) && !end_of_stream {
             return Ok(FilterAction::Continue);
         }
         apply_rewrite(
@@ -198,7 +201,7 @@ impl HttpFilter for JsonBodyFilter {
         body: &mut Option<Bytes>,
         end_of_stream: bool,
     ) -> Result<FilterAction, FilterError> {
-        if !extract_only(&self.response_ops) && !end_of_stream {
+        if !extract_only(&self.response_ops.ops) && !end_of_stream {
             return Ok(FilterAction::Continue);
         }
         apply_rewrite(
@@ -232,14 +235,14 @@ enum FitMode {
     reason = "framing policy is part of the rewrite apply path"
 )]
 fn apply_rewrite(
-    ops: &[CompiledOp],
+    op_set: &CompiledOpSet,
     on_invalid: OnInvalidBehavior,
     ctx: &mut HttpFilterContext<'_>,
     body: &mut Option<Bytes>,
     fit: FitMode,
     end_of_stream: bool,
 ) -> Result<FilterAction, FilterError> {
-    if ops.is_empty() {
+    if op_set.ops.is_empty() {
         return Ok(FilterAction::Continue);
     }
 
@@ -247,13 +250,13 @@ fn apply_rewrite(
         return handle_invalid(on_invalid, "empty body");
     };
 
-    let mode = if extract_only(ops) {
+    let mode = if extract_only(&op_set.ops) {
         RewriteMode::ExtractOnly
     } else {
         RewriteMode::Rewrite
     };
 
-    match rewrite_document(original, ops, mode, Some(ctx)) {
+    match rewrite_document(original, op_set, mode, Some(ctx)) {
         Ok(_outcome) if mode == RewriteMode::ExtractOnly => Ok(FilterAction::BodyDone),
         Ok(outcome) => {
             let rewritten = outcome.output.unwrap_or_default();
@@ -289,7 +292,7 @@ fn direction_access(ops: &[CompiledOp]) -> BodyAccess {
 
 /// Whether every op in this direction is extract.
 fn extract_only(ops: &[CompiledOp]) -> bool {
-    use self::rewrite::OpKind;
+    use self::config::OpKind;
     !ops.is_empty() && ops.iter().all(|op| op.kind == OpKind::Extract)
 }
 

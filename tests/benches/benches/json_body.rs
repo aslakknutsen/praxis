@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Praxis Contributors
 
-//! Criterion benchmarks comparing `json_body` tokenizer rewrite vs a DOM reference.
+//! Criterion benchmarks for `json_body` tokenizer rewrite.
 //!
 //! Run:
 //! ```console
@@ -24,21 +24,15 @@ mod json_body_workload;
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group};
-use json_body_workload::{
-    BODY_SIZES, BodyLayout, assert_all_layouts_equivalent, body_for_layout, dom_apply_request,
-    tokenizer_apply,
-};
+use json_body_workload::{BODY_SIZES, BodyLayout, body_for_layout, tokenizer_apply};
 
 criterion_group!(
     benches,
     bench_json_body_tokenizer,
-    bench_json_body_dom,
-    bench_json_body_tokenizer_spread,
-    bench_json_body_dom_spread
+    bench_json_body_tokenizer_spread
 );
 
 fn main() {
-    assert_all_layouts_equivalent();
     benches();
 }
 
@@ -46,16 +40,8 @@ fn bench_json_body_tokenizer(c: &mut Criterion) {
     bench_layout(c, "json_body_tokenizer", BodyLayout::Prefix, tokenizer_apply);
 }
 
-fn bench_json_body_dom(c: &mut Criterion) {
-    bench_layout(c, "json_body_dom", BodyLayout::Prefix, dom_apply_request);
-}
-
 fn bench_json_body_tokenizer_spread(c: &mut Criterion) {
     bench_layout(c, "json_body_tokenizer_spread", BodyLayout::Spread, tokenizer_apply);
-}
-
-fn bench_json_body_dom_spread(c: &mut Criterion) {
-    bench_layout(c, "json_body_dom_spread", BodyLayout::Spread, dom_apply_request);
 }
 
 fn bench_layout<F>(c: &mut Criterion, group_name: &str, layout: BodyLayout, mut apply: F)

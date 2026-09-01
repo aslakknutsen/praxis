@@ -6,7 +6,7 @@
 //! Compiled only with the `bench-internals` feature on `praxis-filter`.
 
 use super::{
-    config::{CompiledOp, JsonBodyConfig, build_ops},
+    config::{CompiledOpSet, JsonBodyConfig, build_ops},
     rewrite::{RewriteMode, rewrite_document},
 };
 use crate::{FilterError, factory::parse_filter_config};
@@ -18,7 +18,7 @@ use crate::{FilterError, factory::parse_filter_config};
 /// Compiled request-body operations for benchmarks.
 #[derive(Clone, Debug)]
 pub struct RequestOps {
-    ops: Vec<CompiledOp>,
+    op_set: CompiledOpSet,
 }
 
 impl RequestOps {
@@ -41,7 +41,11 @@ impl RequestOps {
     pub fn from_config(config: &serde_yaml::Value) -> Result<Self, FilterError> {
         let cfg: JsonBodyConfig = parse_filter_config("json_body", config)?;
         let (_max_body_bytes, _on_invalid, compiled) = build_ops(cfg)?;
-        Ok(Self { ops: compiled.request })
+        Ok(Self { op_set: compiled.request })
+    }
+
+    fn op_set(&self) -> &CompiledOpSet {
+        &self.op_set
     }
 }
 
@@ -51,7 +55,34 @@ impl RequestOps {
 ///
 /// Returns an error when JSON is invalid or rewrite fails.
 pub fn apply_request(body: &[u8], ops: &RequestOps) -> Result<Vec<u8>, String> {
-    rewrite_document(body, &ops.ops, RewriteMode::Rewrite, None)
+    rewrite_document(body, ops.op_set(), RewriteMode::Rewrite, None)
         .map(|outcome| outcome.output.unwrap_or_default())
         .map_err(|e| e.as_str().to_owned())
+}
+
+/// Capture extract ops only (no output buffer allocation).
+///
+/// # Errors
+///
+/// Returns an error when JSON is invalid or extraction fails before completion.
+pub fn extract_request(body: &[u8], ops: &RequestOps) -> Result<(), String> {
+    rewrite_document(body, ops.op_set(), RewriteMode::ExtractOnly, None)
+        .map(|_| ())
+        .map_err(|e| e.as_str().to_owned())
+}
+
+/// Capture extract ops and return metadata written to context.
+///
+/// # Errors
+///
+/// Returns an error when JSON is invalid or extraction fails before completion.
+pub fn extract_request_metadata(
+    body: &[u8],
+    ops: &RequestOps,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let req = crate::test_utils::make_request(http::Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    rewrite_document(body, ops.op_set(), RewriteMode::ExtractOnly, Some(&mut ctx))
+        .map_err(|e| e.as_str().to_owned())?;
+    Ok(ctx.filter_metadata.clone())
 }

@@ -425,7 +425,7 @@ mod macro_tests {
 // Test Utilities
 // -----------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(any(test, feature = "bench-internals"))]
 #[expect(clippy::allow_attributes, reason = "blanket test suppressions")]
 #[allow(clippy::expect_used, reason = "test utilities")]
 pub(crate) mod test_utils {
@@ -503,6 +503,7 @@ pub(crate) mod test_utils {
     }
 
     /// Build a minimal OK response for filter unit tests.
+    #[cfg_attr(feature = "bench-internals", allow(dead_code))]
     pub(crate) fn make_response() -> crate::context::Response {
         crate::context::Response {
             headers: HeaderMap::new(),
