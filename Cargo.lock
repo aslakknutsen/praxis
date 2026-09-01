@@ -3345,6 +3345,7 @@ dependencies = [
  "dashmap",
  "http",
  "jsonwebtoken",
+ "memchr",
  "metrics",
  "metrics-exporter-prometheus",
  "opentelemetry",
