@@ -7,8 +7,9 @@ use bytes::Bytes;
 use serde::Deserialize;
 
 use super::{
+    index::OpPathIndex,
     pointer::{compile_pointer, pointers_overlap},
-    rewrite::{ExtractDest, OpKind},
+    skip::encode_json_string,
 };
 use crate::{
     FilterError,
@@ -121,6 +122,44 @@ fn default_max_body_bytes() -> usize {
 }
 
 // -----------------------------------------------------------------------------
+// Operation kinds
+// -----------------------------------------------------------------------------
+
+/// Kind of pointer operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OpKind {
+    /// Insert last token (overwrite existing object keys; insert/append on arrays).
+    Add,
+    /// Overwrite if the pointer exists; skip if missing.
+    Replace,
+    /// Omit if present; skip if missing.
+    Remove,
+    /// Copy the pointer's JSON into context; body is unchanged.
+    Extract,
+}
+
+impl OpKind {
+    /// Whether this op mutates the serialized body.
+    pub(super) const fn is_mutating(self) -> bool {
+        matches!(self, Self::Add | Self::Replace | Self::Remove)
+    }
+}
+
+/// Where an extracted JSON span is written.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ExtractDest {
+    /// `filter_metadata` key.
+    Metadata(String),
+    /// Structured-metadata namespace and key.
+    Structured {
+        /// Structured-metadata namespace.
+        namespace: String,
+        /// Field within the namespace object.
+        key: String,
+    },
+}
+
+// -----------------------------------------------------------------------------
 // Compiled ops
 // -----------------------------------------------------------------------------
 
@@ -153,14 +192,29 @@ pub(super) struct CompiledOp {
     pub source: Option<ValueSource>,
     /// Extract destination; `None` unless [`OpKind::Extract`].
     pub dest: Option<ExtractDest>,
+    /// Pre-serialized static payload from YAML `value`.
+    pub static_payload: Option<Bytes>,
+    /// JSON-quoted last pointer token for object keys (`"tenant"`).
+    pub encoded_last_token: Option<Bytes>,
+}
+
+/// Compiled operations plus lookup index for one direction.
+#[derive(Clone, Debug)]
+pub(super) struct CompiledOpSet {
+    /// Operations in config order (extract, add, replace, remove).
+    pub ops: Vec<CompiledOp>,
+    /// Trie index for pointer lookups.
+    pub index: OpPathIndex,
+    /// Sum of static payload and encoded key sizes for output capacity.
+    pub growth_hint: usize,
 }
 
 /// Request-side and response-side compiled operations.
 pub(super) struct CompiledOps {
-    /// Request-body operations, config order (extract, add, replace, remove).
-    pub request: Vec<CompiledOp>,
-    /// Response-body operations, config order (extract, add, replace, remove).
-    pub response: Vec<CompiledOp>,
+    /// Request-body operations.
+    pub request: CompiledOpSet,
+    /// Response-body operations.
+    pub response: CompiledOpSet,
 }
 
 // -----------------------------------------------------------------------------
@@ -192,11 +246,12 @@ pub(super) fn build_ops(cfg: JsonBodyConfig) -> Result<(usize, OnInvalidBehavior
         cfg.response_extract,
     )?;
 
-    if request.is_empty() && response.is_empty() {
+    if request.ops.is_empty() && response.ops.is_empty() {
         return Err("json_body: at least one add, remove, replace, or extract operation is required".into());
     }
 
     if response
+        .ops
         .iter()
         .any(|op| matches!(op.kind, OpKind::Add | OpKind::Replace))
     {
@@ -209,6 +264,36 @@ pub(super) fn build_ops(cfg: JsonBodyConfig) -> Result<(usize, OnInvalidBehavior
     Ok((cfg.max_body_bytes, cfg.on_invalid, CompiledOps { request, response }))
 }
 
+/// Wrap compiled ops with trie index and growth hint.
+fn finalize_op_set(ops: Vec<CompiledOp>) -> CompiledOpSet {
+    let growth_hint = ops.iter().map(op_growth_bytes).sum();
+    let index = OpPathIndex::build(&ops);
+    CompiledOpSet {
+        ops,
+        index,
+        growth_hint,
+    }
+}
+
+/// Bytes contributed by one op to rewritten output size.
+fn op_growth_bytes(op: &CompiledOp) -> usize {
+    let payload = op.static_payload.as_ref().map(|b| b.len()).unwrap_or(0);
+    let key = op.encoded_last_token.as_ref().map(|b| b.len()).unwrap_or(0);
+    match op.kind {
+        OpKind::Add | OpKind::Replace => payload + key,
+        OpKind::Remove | OpKind::Extract => 0,
+    }
+}
+
+/// JSON-quoted last token when the pointer ends on an object key.
+fn encoded_last_object_token(tokens: &[String]) -> Option<Bytes> {
+    let last = tokens.last()?;
+    if super::index::array_index(last).is_some() || last == "-" {
+        return None;
+    }
+    Some(encode_json_string(last))
+}
+
 /// Compile one direction's extract/add/replace/remove lists.
 fn compile_direction(
     direction: &str,
@@ -216,7 +301,7 @@ fn compile_direction(
     replace: Vec<PointerOpConfig>,
     remove: Vec<String>,
     extract: Vec<ExtractOpConfig>,
-) -> Result<Vec<CompiledOp>, FilterError> {
+) -> Result<CompiledOpSet, FilterError> {
     let mut ops = Vec::with_capacity(extract.len() + add.len() + replace.len() + remove.len());
     for cfg in extract {
         ops.push(compile_extract_op(direction, cfg)?);
@@ -231,7 +316,7 @@ fn compile_direction(
         ops.push(compile_remove_op(direction, pointer)?);
     }
     reject_overlaps(direction, &ops)?;
-    Ok(ops)
+    Ok(finalize_op_set(ops))
 }
 
 /// Compile an add or replace entry.
@@ -246,12 +331,16 @@ fn compile_valued_op(
         return Err(format!("json_body: {direction}_{section} cannot target the document root (pointer \"\")").into());
     }
     let source = value_source(direction, section, &cfg)?;
+    let static_payload = static_payload_from_source(&source);
+    let encoded_last_token = encoded_last_object_token(&tokens);
     Ok(CompiledOp {
         pointer: cfg.pointer,
         tokens,
         kind,
-        source: Some(source),
+        source: source_without_static(static_payload.as_ref(), source),
         dest: None,
+        static_payload,
+        encoded_last_token,
     })
 }
 
@@ -261,12 +350,15 @@ fn compile_remove_op(direction: &str, pointer: String) -> Result<CompiledOp, Fil
     if tokens.is_empty() {
         return Err(format!("json_body: {direction}_remove cannot target the document root (pointer \"\")").into());
     }
+    let encoded_last_token = encoded_last_object_token(&tokens);
     Ok(CompiledOp {
         pointer,
         tokens,
         kind: OpKind::Remove,
         source: None,
         dest: None,
+        static_payload: None,
+        encoded_last_token,
     })
 }
 
@@ -280,6 +372,8 @@ fn compile_extract_op(direction: &str, cfg: ExtractOpConfig) -> Result<CompiledO
         kind: OpKind::Extract,
         source: None,
         dest: Some(dest),
+        static_payload: None,
+        encoded_last_token: None,
     })
 }
 
@@ -376,5 +470,20 @@ fn overlapping_ops(a: &CompiledOp, b: &CompiledOp) -> bool {
         (true, true) => pointers_overlap(&a.tokens, &b.tokens),
         (false, false) => a.tokens == b.tokens,
         _ => false,
+    }
+}
+
+fn static_payload_from_source(source: &ValueSource) -> Option<Bytes> {
+    match source {
+        ValueSource::Static(bytes) => Some(bytes.clone()),
+        ValueSource::Metadata(_) | ValueSource::Structured { .. } => None,
+    }
+}
+
+fn source_without_static(static_payload: Option<&Bytes>, source: ValueSource) -> Option<ValueSource> {
+    if static_payload.is_some() {
+        None
+    } else {
+        Some(source)
     }
 }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Praxis Contributors
 
-//! Shared workload, fixtures, and DOM reference for `json_body` benchmarks.
+//! Shared workload and fixtures for `json_body` benchmarks.
 //!
 //! Fixtures mimic an OpenAI-style chat completion request body: `model`,
 //! `messages`, `temperature`, `max_tokens`, and `stream`.
@@ -18,7 +18,6 @@
 use std::sync::LazyLock;
 
 use praxis_filter::builtins::http::payload_processing::bench::{RequestOps, apply_request};
-use serde_json::Value;
 
 /// Default `json_body` max body size (10 MiB).
 pub(crate) const TARGET_10_MIB: usize = 10_485_760;
@@ -99,43 +98,6 @@ pub(crate) fn body_for_layout(layout: BodyLayout, label: &str) -> &'static [u8] 
 /// Tokenizer path used by Criterion and heap benches.
 pub(crate) fn tokenizer_apply(body: &[u8]) -> Vec<u8> {
     apply_request(body, request_ops()).expect("tokenizer apply must succeed on fixtures")
-}
-
-/// DOM reference: parse → pointer mutations → serialize.
-pub(crate) fn dom_apply_request(body: &[u8]) -> Vec<u8> {
-    let mut root: Value = serde_json::from_slice(body).expect("fixture must be valid JSON");
-
-    let extracted_model = pointer_get(&root, &["model".to_owned()])
-        .and_then(|v| v.as_str())
-        .map(str::to_owned)
-        .expect("/model must exist on fixtures");
-
-    pointer_replace(&mut root, &["model".to_owned()], Value::String("forced-model".into()));
-    pointer_add(&mut root, &["tenant".to_owned()], Value::String("acme".into()));
-    pointer_add(
-        &mut root,
-        &["original_model".to_owned()],
-        Value::String(extracted_model),
-    );
-    pointer_remove(&mut root, &["secret".to_owned()]);
-
-    serde_json::to_vec(&root).expect("serialize DOM result")
-}
-
-/// Assert tokenizer and DOM paths produce equivalent JSON values.
-pub(crate) fn assert_output_equivalent(body: &[u8]) {
-    let tok = tokenizer_apply(body);
-    let dom = dom_apply_request(body);
-    let tok_val: Value = serde_json::from_slice(&tok).expect("tokenizer output must be JSON");
-    let dom_val: Value = serde_json::from_slice(&dom).expect("DOM output must be JSON");
-    assert_eq!(tok_val, dom_val, "tokenizer and DOM paths must match semantically");
-}
-
-/// Assert equivalence for every registered layout at 256 KiB.
-pub(crate) fn assert_all_layouts_equivalent() {
-    for layout in [BodyLayout::Prefix, BodyLayout::Spread] {
-        assert_output_equivalent(body_for_layout(layout, "256kiB"));
-    }
 }
 
 /// Build a chat completion request body of at least `target_bytes`.
@@ -242,66 +204,4 @@ fn emit_member(body: &mut String, first: &mut bool, member: &str) {
     }
     *first = false;
     body.push_str(member);
-}
-
-fn pointer_get<'a>(value: &'a Value, tokens: &[String]) -> Option<&'a Value> {
-    tokens.iter().try_fold(value, |current, token| match current {
-        Value::Object(map) => map.get(token),
-        _ => None,
-    })
-}
-
-fn pointer_get_mut<'a>(value: &'a mut Value, tokens: &[String]) -> Option<&'a mut Value> {
-    if tokens.is_empty() {
-        return Some(value);
-    }
-    let (head, tail) = tokens.split_first()?;
-    match value {
-        Value::Object(map) => {
-            let child = map.get_mut(head)?;
-            pointer_get_mut(child, tail)
-        },
-        _ => None,
-    }
-}
-
-fn pointer_add(root: &mut Value, tokens: &[String], new_value: Value) {
-    if tokens.is_empty() {
-        *root = new_value;
-        return;
-    }
-    if tokens.len() == 1 {
-        if let Value::Object(map) = root {
-            map.insert(tokens[0].clone(), new_value);
-        }
-        return;
-    }
-    if let Some(parent) = pointer_get_mut(root, &tokens[..tokens.len() - 1]) {
-        if let Value::Object(map) = parent {
-            map.insert(tokens[tokens.len() - 1].clone(), new_value);
-        }
-    }
-}
-
-fn pointer_replace(root: &mut Value, tokens: &[String], new_value: Value) {
-    if let Some(target) = pointer_get_mut(root, tokens) {
-        *target = new_value;
-    }
-}
-
-fn pointer_remove(root: &mut Value, tokens: &[String]) {
-    if tokens.is_empty() {
-        return;
-    }
-    if tokens.len() == 1 {
-        if let Value::Object(map) = root {
-            map.remove(&tokens[0]);
-        }
-        return;
-    }
-    if let Some(parent) = pointer_get_mut(root, &tokens[..tokens.len() - 1]) {
-        if let Value::Object(map) = parent {
-            map.remove(&tokens[tokens.len() - 1]);
-        }
-    }
 }

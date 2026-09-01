@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Praxis Contributors
 
-//! Heap allocation totals for `json_body` tokenizer vs DOM reference.
+//! Heap allocation totals for `json_body` tokenizer rewrite.
 //!
 //! Run:
 //! ```console
@@ -18,10 +18,7 @@
 
 mod json_body_workload;
 
-use json_body_workload::{
-    BODY_SIZES, BodyLayout, assert_all_layouts_equivalent, body_for_layout, dom_apply_request,
-    tokenizer_apply,
-};
+use json_body_workload::{BODY_SIZES, BodyLayout, body_for_layout, tokenizer_apply};
 
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
@@ -29,14 +26,12 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 const ITERATIONS: usize = 20;
 
 fn main() {
-    assert_all_layouts_equivalent();
     println!("layout\tpath\tsize\titerations\ttotal_bytes\tmax_bytes");
     for layout in [BodyLayout::Prefix, BodyLayout::Spread] {
         let layout_name = layout_label(layout);
         for &(label, _) in BODY_SIZES {
             let body = body_for_layout(layout, label);
             bench_path(layout_name, "tokenizer", label, body, tokenizer_apply);
-            bench_path(layout_name, "dom", label, body, dom_apply_request);
         }
     }
 }
