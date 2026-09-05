@@ -7,7 +7,7 @@
 
 use super::{
     config::{CompiledOpSet, JsonBodyConfig, build_ops},
-    rewrite::{RewriteMode, rewrite_document},
+    rewrite::rewrite_document,
 };
 use crate::{FilterError, factory::parse_filter_config};
 
@@ -57,7 +57,7 @@ impl RequestOps {
 ///
 /// Returns an error when JSON is invalid or rewrite fails.
 pub fn apply_request(body: &[u8], ops: &RequestOps) -> Result<Vec<u8>, String> {
-    rewrite_document(body, ops.op_set(), RewriteMode::Rewrite, None)
+    rewrite_document(body, ops.op_set(), None)
         .map(|outcome| outcome.output.unwrap_or_default())
         .map_err(|e| e.as_str().to_owned())
 }
@@ -68,7 +68,7 @@ pub fn apply_request(body: &[u8], ops: &RequestOps) -> Result<Vec<u8>, String> {
 ///
 /// Returns an error when JSON is invalid or extraction fails before completion.
 pub fn extract_request(body: &[u8], ops: &RequestOps) -> Result<(), String> {
-    rewrite_document(body, ops.op_set(), RewriteMode::ExtractOnly, None)
+    rewrite_document(body, ops.op_set(), None)
         .map(|_| ())
         .map_err(|e| e.as_str().to_owned())
 }
@@ -84,7 +84,6 @@ pub fn extract_request_metadata(
 ) -> Result<std::collections::HashMap<String, String>, String> {
     let req = crate::test_utils::make_request(http::Method::POST, "/");
     let mut ctx = crate::test_utils::make_filter_context(&req);
-    rewrite_document(body, ops.op_set(), RewriteMode::ExtractOnly, Some(&mut ctx))
-        .map_err(|e| e.as_str().to_owned())?;
+    rewrite_document(body, ops.op_set(), Some(&mut ctx)).map_err(|e| e.as_str().to_owned())?;
     Ok(ctx.filter_metadata.clone())
 }
