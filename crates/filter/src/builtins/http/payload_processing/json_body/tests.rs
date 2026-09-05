@@ -328,6 +328,15 @@ fn invalid_json_errors() {
 }
 
 #[test]
+fn depth_exceeded_errors() {
+    let mut nested = String::from("1");
+    for _ in 0..130 {
+        nested = format!("[{nested}]");
+    }
+    assert_eq!(rewrite_str(&nested, &[]).unwrap_err(), RewriteError::Depth);
+}
+
+#[test]
 fn pretty_printed_object_rewrites() {
     let input = "{\n  \"a\": 1,\n  \"b\": 2\n}";
     let out = rewrite_str(input, &[resolved(OpKind::Remove, "/b", None)]).unwrap();
@@ -469,6 +478,25 @@ async fn invalid_json_reject() {
         matches!(action, FilterAction::Reject(r) if r.status == 400),
         "invalid JSON with on_invalid reject"
     );
+}
+
+#[tokio::test]
+async fn invalid_json_error() {
+    let filter = parse_filter(
+        r#"
+        on_invalid: error
+        request_remove:
+          - /a
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body = Some(Bytes::from_static(b"{"));
+    let err = filter
+        .on_request_body(&mut ctx, &mut body, true)
+        .await
+        .expect_err("on_invalid: error should return FilterError");
+    assert!(err.to_string().contains("invalid JSON"), "got: {err}");
 }
 
 #[test]
