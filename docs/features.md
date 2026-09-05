@@ -80,7 +80,9 @@
 - **JSON body rewrite**: the built-in `json_body` filter
   applies JSON Pointer add, remove, replace, and extract
   operations to request and response bodies without building
-  a JSON DOM. Extract copies pointer values into
+  a JSON DOM. Duplicate object keys are preserved unless an
+  operation targets them (remove every match, rewrite every
+  match, extract last). Extract copies pointer values into
   `filter_metadata` or structured metadata without
   changing the body. Request `Content-Length` is repaired;
   response growth is refused because headers are already on
