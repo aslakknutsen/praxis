@@ -67,6 +67,32 @@ fn rejects_empty_ops() {
 }
 
 #[test]
+fn rejects_response_add() {
+    let err = parse_err(
+        r#"
+        response_add:
+          - pointer: /x
+            value: 1
+        "#,
+    );
+    assert!(err.contains("response_add"), "got: {err}");
+    assert!(err.contains("not supported"), "got: {err}");
+}
+
+#[test]
+fn rejects_response_replace() {
+    let err = parse_err(
+        r#"
+        response_replace:
+          - pointer: /x
+            value: 1
+        "#,
+    );
+    assert!(err.contains("response_replace"), "got: {err}");
+    assert!(err.contains("not supported"), "got: {err}");
+}
+
+#[test]
 fn rejects_overlapping_pointers() {
     let err = parse_err(
         r#"
@@ -524,21 +550,11 @@ fn response_shrink_is_padded() {
 }
 
 #[test]
-fn response_grow_keeps_original() {
-    let filter = parse_filter(
-        r#"
-        response_add:
-          - pointer: /pad
-            value: this-value-makes-the-body-longer-than-the-original
-        "#,
+fn fit_response_refuses_growth() {
+    assert!(
+        super::fit_response(4, b"12345".to_vec()).is_none(),
+        "longer rewrite cannot be framed"
     );
-    let req = crate::test_utils::make_request(http::Method::GET, "/");
-    let mut ctx = crate::test_utils::make_filter_context(&req);
-    let original = Bytes::from_static(br#"{"a":1}"#);
-    let mut body = Some(original.clone());
-    let action = filter.on_response_body(&mut ctx, &mut body, true).unwrap();
-    assert!(matches!(action, FilterAction::BodyDone));
-    assert_eq!(body.unwrap(), original, "growth refused");
 }
 
 #[test]

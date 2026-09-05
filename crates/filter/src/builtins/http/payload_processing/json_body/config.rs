@@ -44,15 +44,18 @@ pub(super) struct JsonBodyConfig {
     #[serde(default)]
     pub request_extract: Vec<ExtractOpConfig>,
 
-    /// Pointers to insert (or overwrite) on the response body.
+    /// Rejected when non-empty. Response add can grow the body after
+    /// `Content-Length` is committed.
     #[serde(default)]
     pub response_add: Vec<PointerOpConfig>,
 
-    /// Pointers to omit from the response body.
+    /// Pointers to omit from the response body. Shrinks are padded with
+    /// trailing spaces so `Content-Length` still matches.
     #[serde(default)]
     pub response_remove: Vec<String>,
 
-    /// Pointers to overwrite on the response body when present.
+    /// Rejected when non-empty. Response replace can grow the body after
+    /// `Content-Length` is committed.
     #[serde(default)]
     pub response_replace: Vec<PointerOpConfig>,
 
@@ -227,9 +230,16 @@ pub(super) struct CompiledOps {
 ///
 /// Returns [`FilterError`] when no operations are configured, a pointer is
 /// invalid, value sources are missing or duplicated, pointers overlap within
-/// a direction, or `max_body_bytes` is out of range.
+/// a direction, `response_add` or `response_replace` is set, or
+/// `max_body_bytes` is out of range.
 pub(super) fn build_ops(cfg: JsonBodyConfig) -> Result<(usize, OnInvalidBehavior, CompiledOps), FilterError> {
     validate_max_body_bytes("json_body", cfg.max_body_bytes)?;
+
+    if !cfg.response_add.is_empty() || !cfg.response_replace.is_empty() {
+        return Err("json_body: response_add and response_replace are not supported; \
+             response Content-Length is already committed. Use response_remove or response_extract"
+            .into());
+    }
 
     let request = compile_direction(
         "request",
@@ -240,25 +250,14 @@ pub(super) fn build_ops(cfg: JsonBodyConfig) -> Result<(usize, OnInvalidBehavior
     )?;
     let response = compile_direction(
         "response",
-        cfg.response_add,
-        cfg.response_replace,
+        Vec::new(),
+        Vec::new(),
         cfg.response_remove,
         cfg.response_extract,
     )?;
 
     if request.ops.is_empty() && response.ops.is_empty() {
         return Err("json_body: at least one add, remove, replace, or extract operation is required".into());
-    }
-
-    if response
-        .ops
-        .iter()
-        .any(|op| matches!(op.kind, OpKind::Add | OpKind::Replace))
-    {
-        tracing::warn!(
-            "json_body: response_add/response_replace can grow the body; \
-             response Content-Length is already committed and growth is refused at runtime"
-        );
     }
 
     Ok((cfg.max_body_bytes, cfg.on_invalid, CompiledOps { request, response }))

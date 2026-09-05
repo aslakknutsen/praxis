@@ -7,8 +7,9 @@
 //! Walks the document with a path-stack tokenizer (no JSON DOM). Unused
 //! subtrees are copied as byte spans. Values are resolved from static YAML or
 //! filter context during the walk. Request `Content-Length` is repaired by
-//! `StreamBuffer`; response growth is refused because headers are already on
-//! the wire. Extract-only directions use `BodyAccess::ReadOnly`. Duplicate
+//! `StreamBuffer`. Response add and replace are rejected at config time
+//! because headers are already on the wire; response remove is padded with
+//! trailing spaces. Extract-only directions use `BodyAccess::ReadOnly`. Duplicate
 //! object keys are preserved unless an operation targets that key: remove
 //! drops every match, replace and add-over-existing rewrite every match, add
 //! injects once when none exist, and extract keeps the last match. Add `/-`
@@ -57,7 +58,8 @@ use crate::{
 // JsonBodyFilter
 // -----------------------------------------------------------------------------
 
-/// Rewrites JSON request and response bodies using JSON Pointer add, remove, replace, and extract.
+/// Rewrites JSON request bodies with JSON Pointer add, remove, replace, and extract, and response bodies with remove
+/// and extract.
 ///
 /// Applies mutating operations in one pass over a `StreamBuffer`-held body.
 /// Extract copies a pointer's JSON into `filter_metadata` or structured
@@ -79,8 +81,8 @@ use crate::{
 /// are skipped when the extract value is not yet available.
 ///
 /// Response `Content-Length` is already committed when body hooks run.
-/// Shrinking responses are padded with trailing spaces; growth is refused
-/// and the original body is forwarded.
+/// `response_add` and `response_replace` are rejected at config time.
+/// `response_remove` shrinks are padded with trailing spaces.
 ///
 /// # YAML configuration
 ///
@@ -138,7 +140,8 @@ impl JsonBodyFilter {
     /// # Errors
     ///
     /// Returns [`FilterError`] if the YAML is invalid, no operations are
-    /// configured, pointers overlap, or a value source is missing.
+    /// configured, `response_add` or `response_replace` is set, pointers
+    /// overlap, or a value source is missing.
     ///
     /// [`FilterError`]: crate::FilterError
     pub fn from_config(config: &serde_yaml::Value) -> Result<Box<dyn HttpFilter>, FilterError> {
@@ -231,7 +234,7 @@ impl HttpFilter for JsonBodyFilter {
 enum FitMode {
     /// Request: length may change; `StreamBuffer` repairs `Content-Length`.
     Request,
-    /// Response: pad on shrink, refuse on grow.
+    /// Response: pad on shrink; refuse on grow (config forbids add/replace).
     Response,
 }
 
