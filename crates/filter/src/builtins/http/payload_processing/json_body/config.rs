@@ -285,13 +285,9 @@ fn op_growth_bytes(op: &CompiledOp) -> usize {
     }
 }
 
-/// JSON-quoted last token when the pointer ends on an object key.
+/// JSON-quoted last pointer token, used when injecting a missing object member.
 fn encoded_last_object_token(tokens: &[String]) -> Option<Bytes> {
-    let last = tokens.last()?;
-    if super::index::array_index(last).is_some() || last == "-" {
-        return None;
-    }
-    Some(encode_json_string(last))
+    tokens.last().map(|last| encode_json_string(last))
 }
 
 /// Compile one direction's extract/add/replace/remove lists.
@@ -481,9 +477,5 @@ fn static_payload_from_source(source: &ValueSource) -> Option<Bytes> {
 }
 
 fn source_without_static(static_payload: Option<&Bytes>, source: ValueSource) -> Option<ValueSource> {
-    if static_payload.is_some() {
-        None
-    } else {
-        Some(source)
-    }
+    if static_payload.is_some() { None } else { Some(source) }
 }
