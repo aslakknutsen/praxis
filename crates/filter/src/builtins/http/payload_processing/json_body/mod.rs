@@ -1,19 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Praxis Contributors
 
-//! Rewrites JSON request and response bodies using JSON Pointer
-//! add/remove/replace, and copies pointer values into request context.
+//! JSON Pointer rewrite/extract filter. Operator semantics: [`JsonBodyFilter`].
 //!
 //! Walks the document with a path-stack tokenizer (no JSON DOM). Unused
-//! subtrees are copied as byte spans. Values are resolved from static YAML or
-//! filter context during the walk. Request `Content-Length` is repaired by
-//! `StreamBuffer`. Response add and replace are rejected at config time
-//! because headers are already on the wire; response remove is padded with
-//! trailing spaces. Extract-only directions use `BodyAccess::ReadOnly`. Duplicate
-//! object keys are preserved unless an operation targets that key: remove
-//! drops every match, replace and add-over-existing rewrite every match, add
-//! injects once when none exist, and extract keeps the last match. Add `/-`
-//! appends to arrays only; on an object that operation is skipped.
+//! subtrees are copied as byte spans.
 
 #[cfg(feature = "bench-internals")]
 pub mod bench;
@@ -43,8 +34,8 @@ use bytes::Bytes;
 use tracing::warn;
 
 use self::{
-    config::{CompiledOp, CompiledOpSet, CompiledOps, JsonBodyConfig, build_ops},
-    rewrite::{RewriteMode, rewrite_document},
+    config::{CompiledOpSet, CompiledOps, JsonBodyConfig, build_ops},
+    rewrite::rewrite_document,
 };
 use crate::{
     FilterAction, FilterError, Rejection,
@@ -163,11 +154,11 @@ impl HttpFilter for JsonBodyFilter {
     }
 
     fn request_body_access(&self) -> BodyAccess {
-        direction_access(&self.request_ops.ops)
+        direction_access(&self.request_ops)
     }
 
     fn response_body_access(&self) -> BodyAccess {
-        direction_access(&self.response_ops.ops)
+        direction_access(&self.response_ops)
     }
 
     fn request_body_mode(&self) -> BodyMode {
@@ -192,7 +183,7 @@ impl HttpFilter for JsonBodyFilter {
         body: &mut Option<Bytes>,
         end_of_stream: bool,
     ) -> Result<FilterAction, FilterError> {
-        if !extract_only(&self.request_ops.ops) && !end_of_stream {
+        if !self.request_ops.extract_only && !end_of_stream {
             return Ok(FilterAction::Continue);
         }
         apply_rewrite(
@@ -211,7 +202,7 @@ impl HttpFilter for JsonBodyFilter {
         body: &mut Option<Bytes>,
         end_of_stream: bool,
     ) -> Result<FilterAction, FilterError> {
-        if !extract_only(&self.response_ops.ops) && !end_of_stream {
+        if !self.response_ops.extract_only && !end_of_stream {
             return Ok(FilterAction::Continue);
         }
         apply_rewrite(
@@ -241,7 +232,6 @@ enum FitMode {
 /// Resolve context values, rewrite, and apply framing policy.
 #[expect(
     clippy::too_many_arguments,
-    clippy::too_many_lines,
     reason = "framing policy is part of the rewrite apply path"
 )]
 fn apply_rewrite(
@@ -259,51 +249,45 @@ fn apply_rewrite(
     let Some(original) = body.as_ref() else {
         return handle_invalid(on_invalid, "empty body");
     };
+    let original_len = original.len();
+    let result = rewrite_document(original, op_set, Some(ctx));
 
-    let mode = if extract_only(&op_set.ops) {
-        RewriteMode::ExtractOnly
-    } else {
-        RewriteMode::Rewrite
-    };
-
-    match rewrite_document(original, op_set, mode, Some(ctx)) {
-        Ok(_outcome) if mode == RewriteMode::ExtractOnly => Ok(FilterAction::BodyDone),
+    match result {
+        Ok(_outcome) if op_set.extract_only => Ok(FilterAction::BodyDone),
         Ok(outcome) => {
-            let rewritten = outcome.output.unwrap_or_default();
-            match fit {
-                FitMode::Request => *body = Some(Bytes::from(rewritten)),
-                FitMode::Response => match fit_response(original.len(), rewritten) {
-                    Some(fitted) => *body = Some(fitted),
-                    None => {
-                        warn!(
-                            original_len = original.len(),
-                            "json_body: refusing response rewrite that exceeds committed Content-Length"
-                        );
-                    },
-                },
-            }
+            apply_fitted_body(body, original_len, outcome.output.unwrap_or_default(), fit);
             Ok(FilterAction::BodyDone)
         },
-        Err(_err) if mode == RewriteMode::ExtractOnly && !end_of_stream => Ok(FilterAction::Continue),
+        Err(_err) if op_set.extract_only && !end_of_stream => Ok(FilterAction::Continue),
         Err(err) => handle_invalid(on_invalid, err.as_str()),
     }
 }
 
+/// Write the rewritten body, padding or refusing according to [`FitMode`].
+fn apply_fitted_body(body: &mut Option<Bytes>, original_len: usize, rewritten: Vec<u8>, fit: FitMode) {
+    match fit {
+        FitMode::Request => *body = Some(Bytes::from(rewritten)),
+        FitMode::Response => match fit_response(original_len, rewritten) {
+            Some(fitted) => *body = Some(fitted),
+            None => {
+                warn!(
+                    original_len,
+                    "json_body: refusing response rewrite that exceeds committed Content-Length"
+                );
+            },
+        },
+    }
+}
+
 /// Body access for one direction.
-fn direction_access(ops: &[CompiledOp]) -> BodyAccess {
-    if ops.is_empty() {
+fn direction_access(op_set: &CompiledOpSet) -> BodyAccess {
+    if op_set.ops.is_empty() {
         BodyAccess::None
-    } else if extract_only(ops) {
+    } else if op_set.extract_only {
         BodyAccess::ReadOnly
     } else {
         BodyAccess::ReadWrite
     }
-}
-
-/// Whether every op in this direction is extract.
-fn extract_only(ops: &[CompiledOp]) -> bool {
-    use self::config::OpKind;
-    !ops.is_empty() && ops.iter().all(|op| op.kind == OpKind::Extract)
 }
 
 /// Map a parse/rewrite failure to `on_invalid`.

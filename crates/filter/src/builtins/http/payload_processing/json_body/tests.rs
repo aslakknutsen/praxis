@@ -228,6 +228,24 @@ fn duplicate_keys_remove_all_matches() {
 }
 
 #[test]
+fn duplicate_keys_replace_all_matches() {
+    let out = rewrite_str(r#"{"a":1,"a":2,"b":3}"#, &[resolved(OpKind::Replace, "/a", Some("9"))]).unwrap();
+    assert_eq!(out, r#"{"a":9,"a":9,"b":3}"#);
+}
+
+#[test]
+fn duplicate_keys_add_replaces_all_existing() {
+    let out = rewrite_str(r#"{"a":1,"a":2}"#, &[resolved(OpKind::Add, "/a", Some("9"))]).unwrap();
+    assert_eq!(out, r#"{"a":9,"a":9}"#);
+}
+
+#[test]
+fn untargeted_duplicate_keys_are_preserved() {
+    let out = rewrite_str(r#"{"a":1,"a":2}"#, &[resolved(OpKind::Add, "/b", Some("3"))]).unwrap();
+    assert_eq!(out, r#"{"a":1,"a":2,"b":3}"#);
+}
+
+#[test]
 fn remove_object_valued_field() {
     let out = rewrite_str(
         r#"{"keep":1,"drop":{"x":2}}"#,
@@ -340,6 +358,32 @@ fn array_insert_at_length() {
 fn array_out_of_range_add_skipped() {
     let out = rewrite_str("[1]", &[resolved(OpKind::Add, "/3", Some("9"))]).unwrap();
     assert_eq!(out, "[1]");
+}
+
+#[test]
+fn array_append_on_object_is_skipped() {
+    let out = rewrite_str(r#"{"a":1}"#, &[resolved(OpKind::Add, "/-", Some("2"))]).unwrap();
+    assert_eq!(out, r#"{"a":1}"#, "add / - is array-only; objects are left unchanged");
+}
+
+#[test]
+fn array_append_does_not_replace_object_dash_key() {
+    let out = rewrite_str(r#"{"-":1}"#, &[resolved(OpKind::Add, "/-", Some("2"))]).unwrap();
+    assert_eq!(out, r#"{"-":1}"#, "array append must not rewrite object key '-'");
+}
+
+#[test]
+fn numeric_pointer_replace_on_object_key() {
+    let out = rewrite_str(r#"{"0":1,"a":2}"#, &[resolved(OpKind::Replace, "/0", Some("9"))]).unwrap();
+    assert_eq!(out, r#"{"0":9,"a":2}"#);
+}
+
+#[test]
+fn numeric_pointer_add_on_object_emits_key() {
+    let out = rewrite_str(r#"{"a":1}"#, &[resolved(OpKind::Add, "/0", Some("9"))]).unwrap();
+    let got: serde_json::Value =
+        serde_json::from_str(&out).unwrap_or_else(|e| panic!("rewrite must emit valid JSON, got {out:?}: {e}"));
+    assert_eq!(got, json!({"a": 1, "0": 9}));
 }
 
 // -----------------------------------------------------------------------------
@@ -926,24 +970,6 @@ async fn missing_metadata_on_existing_replace_keeps_original() {
     );
 }
 
-#[test]
-fn duplicate_keys_replace_all_matches() {
-    let out = rewrite_str(r#"{"a":1,"a":2,"b":3}"#, &[resolved(OpKind::Replace, "/a", Some("9"))]).unwrap();
-    assert_eq!(out, r#"{"a":9,"a":9,"b":3}"#);
-}
-
-#[test]
-fn duplicate_keys_add_replaces_all_existing() {
-    let out = rewrite_str(r#"{"a":1,"a":2}"#, &[resolved(OpKind::Add, "/a", Some("9"))]).unwrap();
-    assert_eq!(out, r#"{"a":9,"a":9}"#);
-}
-
-#[test]
-fn untargeted_duplicate_keys_are_preserved() {
-    let out = rewrite_str(r#"{"a":1,"a":2}"#, &[resolved(OpKind::Add, "/b", Some("3"))]).unwrap();
-    assert_eq!(out, r#"{"a":1,"a":2,"b":3}"#);
-}
-
 #[tokio::test]
 async fn extract_duplicate_keys_keeps_last() {
     let filter = parse_filter(
@@ -960,30 +986,4 @@ async fn extract_duplicate_keys_keeps_last() {
     assert!(matches!(action, FilterAction::BodyDone));
     assert_eq!(ctx.get_metadata("a"), Some("2"), "extract last duplicate");
     assert_eq!(body.as_ref().unwrap().as_ref(), br#"{"a":1,"a":2}"#);
-}
-
-#[test]
-fn array_append_on_object_is_skipped() {
-    let out = rewrite_str(r#"{"a":1}"#, &[resolved(OpKind::Add, "/-", Some("2"))]).unwrap();
-    assert_eq!(out, r#"{"a":1}"#, "add / - is array-only; objects are left unchanged");
-}
-
-#[test]
-fn array_append_does_not_replace_object_dash_key() {
-    let out = rewrite_str(r#"{"-":1}"#, &[resolved(OpKind::Add, "/-", Some("2"))]).unwrap();
-    assert_eq!(out, r#"{"-":1}"#, "array append must not rewrite object key '-'");
-}
-
-#[test]
-fn numeric_pointer_replace_on_object_key() {
-    let out = rewrite_str(r#"{"0":1,"a":2}"#, &[resolved(OpKind::Replace, "/0", Some("9"))]).unwrap();
-    assert_eq!(out, r#"{"0":9,"a":2}"#);
-}
-
-#[test]
-fn numeric_pointer_add_on_object_emits_key() {
-    let out = rewrite_str(r#"{"a":1}"#, &[resolved(OpKind::Add, "/0", Some("9"))]).unwrap();
-    let got: serde_json::Value =
-        serde_json::from_str(&out).unwrap_or_else(|e| panic!("rewrite must emit valid JSON, got {out:?}: {e}"));
-    assert_eq!(got, json!({"a": 1, "0": 9}));
 }
