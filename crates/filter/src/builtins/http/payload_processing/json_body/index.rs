@@ -5,11 +5,7 @@
 
 use std::collections::HashMap;
 
-use smallvec::SmallVec;
-
-use super::{
-    config::{CompiledOp, OpKind},
-};
+use super::config::{CompiledOp, OpKind};
 
 // -----------------------------------------------------------------------------
 // Path tokens
@@ -62,8 +58,8 @@ struct PathNode {
 #[derive(Clone, Debug)]
 pub(super) struct OpPathIndex {
     nodes: Vec<PathNode>,
-    /// Extract op indices in config order.
-    extract_indices: SmallVec<[u32; 8]>,
+    /// Empty sink used when `path` is not in the trie (no parent fallthrough).
+    miss: NodeId,
 }
 
 /// RFC 6901 array index: unsigned integer with no leading zeros (`0` allowed).
@@ -81,13 +77,9 @@ impl OpPathIndex {
     /// Build a trie from compiled ops.
     pub(super) fn build(ops: &[CompiledOp]) -> Self {
         let mut nodes = vec![PathNode::default()];
-        let mut extract_indices = SmallVec::new();
 
         for (idx, op) in ops.iter().enumerate() {
             let idx_u32 = u32::try_from(idx).unwrap_or(u32::MAX);
-            if op.kind == OpKind::Extract {
-                extract_indices.push(idx_u32);
-            }
 
             if op.tokens.is_empty() {
                 let node = &mut nodes[0];
@@ -100,37 +92,16 @@ impl OpPathIndex {
                 continue;
             }
 
-            let mut node_id = 0u32;
+            let mut node_id = 0_u32;
             for (depth, token) in op.tokens.iter().enumerate() {
                 let is_last = depth + 1 == op.tokens.len();
 
-                if token == "-" {
-                    if is_last && op.kind == OpKind::Add {
-                        nodes[node_id as usize].array_append = Some(idx_u32);
-                    }
-                    break;
+                if token == "-" && is_last && op.kind == OpKind::Add {
+                    nodes[node_id as usize].array_append = Some(idx_u32);
                 }
 
                 let parent_idx = node_id;
-                node_id = if let Some(child_idx) = array_index(token) {
-                    if let Some(&child) = nodes[parent_idx as usize].array_children.get(&child_idx) {
-                        child
-                    } else {
-                        let child = u32::try_from(nodes.len()).unwrap_or(0);
-                        nodes.push(PathNode::default());
-                        nodes[parent_idx as usize].array_children.insert(child_idx, child);
-                        child
-                    }
-                } else if let Some(&child) = nodes[parent_idx as usize].object_children.get(token) {
-                    child
-                } else {
-                    let child = u32::try_from(nodes.len()).unwrap_or(0);
-                    nodes.push(PathNode::default());
-                    nodes[parent_idx as usize]
-                        .object_children
-                        .insert(token.clone(), child);
-                    child
-                };
+                node_id = ensure_child(&mut nodes, parent_idx, token);
 
                 let parent = &mut nodes[parent_idx as usize];
                 if !is_last {
@@ -150,15 +121,9 @@ impl OpPathIndex {
             }
         }
 
-        Self {
-            nodes,
-            extract_indices,
-        }
-    }
-
-    /// Extract op indices for this direction.
-    pub(super) fn extract_indices(&self) -> &[u32] {
-        self.extract_indices.as_slice()
+        let miss = u32::try_from(nodes.len()).unwrap_or(0);
+        nodes.push(PathNode::default());
+        Self { nodes, miss }
     }
 
     /// Whether any extract op might match `path` or extend beyond it.
@@ -225,15 +190,19 @@ impl OpPathIndex {
         self.node_at(path).array_append
     }
 
+    /// Trie node at `path`, or the empty miss node if `path` is not in the trie.
     fn node_at(&self, path: &[PathToken]) -> &PathNode {
-        let mut node_id = 0u32;
+        let mut node_id = 0_u32;
         for segment in path {
             let node = &self.nodes[node_id as usize];
-            node_id = match segment {
+            let next = match segment {
                 PathToken::Key(key) => node.object_children.get(key).copied(),
                 PathToken::Index(idx) => node.array_children.get(idx).copied(),
+            };
+            match next {
+                Some(id) => node_id = id,
+                None => return &self.nodes[self.miss as usize],
             }
-            .unwrap_or(node_id);
         }
         &self.nodes[node_id as usize]
     }
@@ -247,4 +216,40 @@ impl OpPathIndex {
         let node = self.node_at(path);
         node.array_children.get(&idx).copied()
     }
+}
+
+/// Existing child for `token`, if already linked as an object key or array index.
+fn child_id_for_token(nodes: &[PathNode], parent_idx: u32, token: &str) -> Option<NodeId> {
+    let parent = &nodes[parent_idx as usize];
+    if let Some(idx) = array_index(token)
+        && let Some(&id) = parent.array_children.get(&idx)
+    {
+        return Some(id);
+    }
+    parent.object_children.get(token).copied()
+}
+
+/// Link `token` as an object key and, when it is an RFC 6901 array index, as that index.
+fn link_token(nodes: &mut [PathNode], parent_idx: u32, token: &str, child: NodeId) {
+    let parent = &mut nodes[parent_idx as usize];
+    parent.object_children.entry(token.to_owned()).or_insert(child);
+    if let Some(idx) = array_index(token) {
+        parent.array_children.entry(idx).or_insert(child);
+    }
+}
+
+/// Get or create the child node for one pointer token.
+///
+/// Digit tokens are reachable both as object keys (`"0"`) and as array indices,
+/// matching RFC 6901 parent-type dispatch. `"-"` is an object key and, for add,
+/// also array append on the parent.
+fn ensure_child(nodes: &mut Vec<PathNode>, parent_idx: u32, token: &str) -> NodeId {
+    if let Some(id) = child_id_for_token(nodes, parent_idx, token) {
+        link_token(nodes, parent_idx, token, id);
+        return id;
+    }
+    let child = u32::try_from(nodes.len()).unwrap_or(0);
+    nodes.push(PathNode::default());
+    link_token(nodes, parent_idx, token, child);
+    child
 }

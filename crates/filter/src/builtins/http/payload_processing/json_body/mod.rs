@@ -8,8 +8,10 @@
 //! subtrees are copied as byte spans. Values are resolved from static YAML or
 //! filter context during the walk. Request `Content-Length` is repaired by
 //! `StreamBuffer`; response growth is refused because headers are already on
-//! the wire. Extract-only directions use `BodyAccess::ReadOnly` and stop
-//! walking once every extract pointer is found.
+//! the wire. Extract-only directions use `BodyAccess::ReadOnly`. Duplicate
+//! object keys are preserved unless an operation targets that key: remove
+//! drops every match, replace and add-over-existing rewrite every match, add
+//! injects once when none exist, and extract keeps the last match.
 
 #[cfg(feature = "bench-internals")]
 pub mod bench;
@@ -63,11 +65,14 @@ use crate::{
 /// Mutating pointers must not overlap (equal or prefix) within a direction.
 /// Duplicate extract pointers are rejected; nested extract pointers are allowed.
 /// Unused subtrees are copied as byte spans. Missing parents, missing
-/// replace/extract targets, and missing context values skip that operation.
-/// Invalid JSON follows [`on_invalid`].
+/// replace/extract targets, and missing context values skip that operation
+/// (the original member is left unchanged). Duplicate object member names
+/// are not canonicalized. Remove drops every matching member. Replace and
+/// add-over-existing rewrite every matching member; add injects once only
+/// when no match exists. Extract keeps the last matching value. Invalid
+/// JSON follows [`on_invalid`].
 ///
-/// Extract-only directions are `ReadOnly` and stop walking once every
-/// configured extract pointer is found. Mixed extract and rewrite uses one
+/// Extract-only directions are `ReadOnly`. Mixed extract and rewrite uses one
 /// walk; metadata-sourced add/replace resolve lazily at each splice site and
 /// are skipped when the extract value is not yet available.
 ///
