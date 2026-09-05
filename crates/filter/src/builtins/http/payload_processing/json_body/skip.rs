@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Praxis Contributors
 
-//! Fast JSON structural skipping (memchr strings, flat container scan).
+//! Fast JSON structural skipping (memchr strings, recursive container walk).
 
 use bytes::Bytes;
 use memchr::memchr2;
@@ -19,10 +19,10 @@ pub(super) fn encode_json_string(s: &str) -> Bytes {
     for b in s.bytes() {
         match b {
             b'"' => out.extend_from_slice(br#"\""#),
-            b'\\' => out.extend_from_slice(br#"\\"#),
-            b'\n' => out.extend_from_slice(br#"\n"#),
-            b'\r' => out.extend_from_slice(br#"\r"#),
-            b'\t' => out.extend_from_slice(br#"\t"#),
+            b'\\' => out.extend_from_slice(br"\\"),
+            b'\n' => out.extend_from_slice(br"\n"),
+            b'\r' => out.extend_from_slice(br"\r"),
+            b'\t' => out.extend_from_slice(br"\t"),
             0x00..=0x1F => {
                 out.push(b'\\');
                 out.push(b'u');
@@ -38,6 +38,7 @@ pub(super) fn encode_json_string(s: &str) -> Bytes {
     Bytes::from(out)
 }
 
+/// Map 0..=15 to a lowercase hex ASCII digit.
 fn hex(digit: u8) -> u8 {
     match digit {
         0..=9 => digit + b'0',
@@ -97,7 +98,7 @@ pub(super) fn skip_string_with_meta(input: &[u8], i: &mut usize) -> Result<bool,
             return Err(RewriteError::InvalidJson);
         };
         *i += rel_off;
-        let b = input[*i];
+        let b = *input.get(*i).ok_or(RewriteError::InvalidJson)?;
         if b == b'"' {
             *i += 1;
             return Ok(escaped);
@@ -194,7 +195,8 @@ fn skip_array(input: &[u8], i: &mut usize, depth: u32) -> Result<(), RewriteErro
     }
 }
 
-fn bump_depth(depth: u32) -> Result<u32, RewriteError> {
+/// Increment nesting; fail if [`MAX_JSON_DEPTH`] would be exceeded.
+pub(super) fn bump_depth(depth: u32) -> Result<u32, RewriteError> {
     let next = depth.saturating_add(1);
     if next > MAX_JSON_DEPTH {
         return Err(RewriteError::Depth);
@@ -268,6 +270,13 @@ fn skip_number_frac_exp(input: &[u8], i: &mut usize) -> Result<(), RewriteError>
 // -----------------------------------------------------------------------------
 
 #[cfg(test)]
+#[expect(clippy::allow_attributes, reason = "blanket test suppressions")]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::format_push_string,
+    reason = "tests"
+)]
 mod tests {
     use super::*;
 
