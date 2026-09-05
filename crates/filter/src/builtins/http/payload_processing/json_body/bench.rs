@@ -41,7 +41,9 @@ impl RequestOps {
     pub fn from_config(config: &serde_yaml::Value) -> Result<Self, FilterError> {
         let cfg: JsonBodyConfig = parse_filter_config("json_body", config)?;
         let (_max_body_bytes, _on_invalid, compiled) = build_ops(cfg)?;
-        Ok(Self { op_set: compiled.request })
+        Ok(Self {
+            op_set: compiled.request,
+        })
     }
 
     fn op_set(&self) -> &CompiledOpSet {

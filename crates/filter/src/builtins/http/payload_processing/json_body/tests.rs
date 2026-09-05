@@ -196,9 +196,9 @@ fn missing_parent_skips_add() {
 }
 
 #[test]
-fn duplicate_keys_first_wins_later_copied() {
+fn duplicate_keys_remove_all_matches() {
     let out = rewrite_str(r#"{"a":1,"a":2}"#, &[resolved(OpKind::Remove, "/a", None)]).unwrap();
-    assert_eq!(out, r#"{"a":2}"#);
+    assert_eq!(out, "{}");
 }
 
 #[test]
@@ -886,4 +886,84 @@ async fn external_metadata_still_works() {
     assert!(matches!(action, FilterAction::BodyDone));
     let got = serde_json::from_slice::<serde_json::Value>(body.as_ref().unwrap()).unwrap();
     assert_eq!(got, json!({"n": 1, "tenant": "acme"}));
+}
+
+#[tokio::test]
+async fn missing_metadata_on_existing_replace_keeps_original() {
+    let filter = parse_filter(
+        r#"
+        request_replace:
+          - pointer: /model
+            metadata: missing.key
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body = Some(Bytes::from_static(br#"{"model":"keep-me","n":1}"#));
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(matches!(action, FilterAction::BodyDone));
+    let got = serde_json::from_slice::<serde_json::Value>(body.as_ref().unwrap()).unwrap();
+    assert_eq!(
+        got,
+        json!({"model": "keep-me", "n": 1}),
+        "missing context must skip the replace, not delete the existing member"
+    );
+}
+
+#[test]
+fn duplicate_keys_replace_all_matches() {
+    let out = rewrite_str(r#"{"a":1,"a":2,"b":3}"#, &[resolved(OpKind::Replace, "/a", Some("9"))]).unwrap();
+    assert_eq!(out, r#"{"a":9,"a":9,"b":3}"#);
+}
+
+#[test]
+fn duplicate_keys_add_replaces_all_existing() {
+    let out = rewrite_str(r#"{"a":1,"a":2}"#, &[resolved(OpKind::Add, "/a", Some("9"))]).unwrap();
+    assert_eq!(out, r#"{"a":9,"a":9}"#);
+}
+
+#[test]
+fn untargeted_duplicate_keys_are_preserved() {
+    let out = rewrite_str(r#"{"a":1,"a":2}"#, &[resolved(OpKind::Add, "/b", Some("3"))]).unwrap();
+    assert_eq!(out, r#"{"a":1,"a":2,"b":3}"#);
+}
+
+#[tokio::test]
+async fn extract_duplicate_keys_keeps_last() {
+    let filter = parse_filter(
+        r#"
+        request_extract:
+          - pointer: /a
+            metadata: a
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body = Some(Bytes::from_static(br#"{"a":1,"a":2}"#));
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(matches!(action, FilterAction::BodyDone));
+    assert_eq!(ctx.get_metadata("a"), Some("2"), "extract last duplicate");
+    assert_eq!(body.as_ref().unwrap().as_ref(), br#"{"a":1,"a":2}"#);
+}
+
+#[test]
+fn array_append_pointer_on_object_is_key_dash() {
+    let out = rewrite_str(r#"{"a":1}"#, &[resolved(OpKind::Add, "/-", Some("2"))]).unwrap();
+    let got: serde_json::Value =
+        serde_json::from_str(&out).unwrap_or_else(|e| panic!("rewrite must emit valid JSON, got {out:?}: {e}"));
+    assert_eq!(got, json!({"a": 1, "-": 2}));
+}
+
+#[test]
+fn numeric_pointer_replace_on_object_key() {
+    let out = rewrite_str(r#"{"0":1,"a":2}"#, &[resolved(OpKind::Replace, "/0", Some("9"))]).unwrap();
+    assert_eq!(out, r#"{"0":9,"a":2}"#);
+}
+
+#[test]
+fn numeric_pointer_add_on_object_emits_key() {
+    let out = rewrite_str(r#"{"a":1}"#, &[resolved(OpKind::Add, "/0", Some("9"))]).unwrap();
+    let got: serde_json::Value =
+        serde_json::from_str(&out).unwrap_or_else(|e| panic!("rewrite must emit valid JSON, got {out:?}: {e}"));
+    assert_eq!(got, json!({"a": 1, "0": 9}));
 }

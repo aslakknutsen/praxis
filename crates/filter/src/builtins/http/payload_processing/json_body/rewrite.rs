@@ -16,14 +16,13 @@ use smallvec::SmallVec;
 use super::{
     config::{CompiledOp, CompiledOpSet, ValueSource},
     index::{PathToken, path_eq_tokens},
-    skip::{
-        expect_byte, next_byte, skip_bom, skip_string_with_meta, skip_value, skip_ws,
-    },
+    skip::{expect_byte, next_byte, skip_bom, skip_string_with_meta, skip_value, skip_ws},
 };
-pub(crate) use super::config::{ExtractDest, OpKind};
+pub(crate) use super::{
+    config::{ExtractDest, OpKind},
+    error::{MAX_JSON_DEPTH, RewriteError},
+};
 use crate::HttpFilterContext;
-
-pub(crate) use super::error::{MAX_JSON_DEPTH, RewriteError};
 
 /// An operation with values already resolved from context (unit tests).
 #[cfg(test)]
@@ -59,12 +58,6 @@ pub(super) struct RewriteOutcome {
 
 /// Per-request capture and lazy resolution state.
 struct RewriteSession {
-    /// Extract-only vs emit rewritten bytes.
-    mode: RewriteMode,
-    /// Extract op indices in config order.
-    extract_indices: SmallVec<[u32; 8]>,
-    /// Parallel to `extract_indices`; true once that pointer was captured.
-    extract_satisfied: Vec<bool>,
     /// Metadata captured this walk or preloaded from context.
     scratch_metadata: HashMap<String, String>,
     /// Structured values preloaded from context for injection.
@@ -78,9 +71,8 @@ struct RewriteSession {
 }
 
 impl RewriteSession {
-    fn new(op_set: &CompiledOpSet, mode: RewriteMode) -> Self {
-        let extract_indices: SmallVec<[u32; 8]> = SmallVec::from_slice(op_set.index.extract_indices());
-        let extract_len = extract_indices.len();
+    /// Allocate scratch maps and cache static payloads for this walk.
+    fn new(op_set: &CompiledOpSet) -> Self {
         let mut resolved = vec![None; op_set.ops.len()];
         for (idx, op) in op_set.ops.iter().enumerate() {
             if let Some(bytes) = &op.static_payload {
@@ -88,9 +80,6 @@ impl RewriteSession {
             }
         }
         Self {
-            mode,
-            extract_indices,
-            extract_satisfied: vec![false; extract_len],
             scratch_metadata: HashMap::new(),
             scratch_structured: HashMap::new(),
             capture_structured: HashMap::new(),
@@ -98,9 +87,7 @@ impl RewriteSession {
             path: SmallVec::new(),
         }
     }
-}
 
-impl RewriteSession {
     /// Write scratch captures into the request context.
     fn flush_to_ctx(&self, ctx: &mut HttpFilterContext<'_>) {
         for (key, text) in &self.scratch_metadata {
@@ -112,18 +99,13 @@ impl RewriteSession {
             }
         }
     }
-
-    /// Whether every extract pointer has been captured (or none were configured).
-    fn all_extracts_done(&self) -> bool {
-        self.extract_indices.is_empty() || self.extract_satisfied.iter().all(|s| *s)
-    }
 }
 
-/// Whether the walk should stop early.
+/// Whether the walk should stop early (reserved; extract no longer stops mid-object).
 enum WalkStep {
     /// Keep walking.
     Continue,
-    /// Every extract op is satisfied (extract-only early exit).
+    /// Stop the walk (unused for extract-last; kept for call-site structure).
     Done,
 }
 
@@ -153,7 +135,7 @@ pub(super) fn rewrite_document(
     mode: RewriteMode,
     ctx: Option<&mut HttpFilterContext<'_>>,
 ) -> Result<RewriteOutcome, RewriteError> {
-    let mut session = RewriteSession::new(op_set, mode);
+    let mut session = RewriteSession::new(op_set);
     if let Some(ctx) = ctx.as_deref() {
         preload_context_sources(op_set, ctx, &mut session);
     }
@@ -217,11 +199,7 @@ pub(super) fn rewrite(input: &[u8], ops: &[ResolvedOp]) -> Result<Vec<u8>, Rewri
     let compiled = ops
         .iter()
         .map(|op| {
-            let encoded_last_token = op
-                .tokens
-                .last()
-                .filter(|t| super::index::array_index(t).is_none() && *t != "-")
-                .map(|t| super::skip::encode_json_string(t));
+            let encoded_last_token = op.tokens.last().map(|t| super::skip::encode_json_string(t));
             CompiledOp {
                 pointer: String::new(),
                 tokens: op.tokens.clone(),
@@ -260,6 +238,9 @@ fn metadata_text(json: &[u8]) -> Option<String> {
 }
 
 /// Capture an extract at `session.path` from `input[start..end]`.
+///
+/// Duplicate object keys: extract keeps the last match by overwriting. The walk
+/// does not stop early; later siblings in the same object can still win.
 fn store_capture(
     input: &[u8],
     start: usize,
@@ -268,37 +249,17 @@ fn store_capture(
     session: &mut RewriteSession,
 ) -> WalkStep {
     if !op_set.index.extract_branch_at(&session.path) {
-        return if session.all_extracts_done() && session.mode == RewriteMode::ExtractOnly {
-            WalkStep::Done
-        } else {
-            WalkStep::Continue
-        };
+        return WalkStep::Continue;
     }
 
     if let Some(op_idx) = op_set.index.extract_at(&session.path) {
-        let extract_slot = session
-            .extract_indices
-            .iter()
-            .position(|&idx| idx == op_idx);
-        if let Some(slot) = extract_slot {
-            let pending = session.extract_satisfied.get(slot).copied() != Some(true);
-            if pending {
-                let op = &op_set.ops[op_idx as usize];
-                if let (Some(json), Some(dest)) = (input.get(start..end), op.dest.as_ref()) {
-                    write_capture_dest(json, dest, session);
-                }
-                if let Some(flag) = session.extract_satisfied.get_mut(slot) {
-                    *flag = true;
-                }
-            }
+        let op = &op_set.ops[op_idx as usize];
+        if let (Some(json), Some(dest)) = (input.get(start..end), op.dest.as_ref()) {
+            write_capture_dest(json, dest, session);
         }
     }
 
-    if session.all_extracts_done() && session.mode == RewriteMode::ExtractOnly {
-        WalkStep::Done
-    } else {
-        WalkStep::Continue
-    }
+    WalkStep::Continue
 }
 
 /// Write one captured JSON span into the matching scratch map.
@@ -331,12 +292,7 @@ fn capture_value_at_path(
 }
 
 /// Copy one JSON value as a raw span (no per-member tokenize of its interior).
-fn copy_span(
-    input: &[u8],
-    i: &mut usize,
-    depth: u32,
-    out: Option<&mut Vec<u8>>,
-) -> Result<(), RewriteError> {
+fn copy_span(input: &[u8], i: &mut usize, depth: u32, out: Option<&mut Vec<u8>>) -> Result<(), RewriteError> {
     skip_ws(input, i);
     let start = *i;
     skip_value(input, i, depth)?;
@@ -348,11 +304,7 @@ fn copy_span(
 }
 
 /// Copy context metadata/structured values into scratch before the walk.
-fn preload_context_sources(
-    op_set: &CompiledOpSet,
-    ctx: &HttpFilterContext<'_>,
-    session: &mut RewriteSession,
-) {
+fn preload_context_sources(op_set: &CompiledOpSet, ctx: &HttpFilterContext<'_>, session: &mut RewriteSession) {
     for op in &op_set.ops {
         if op.kind == OpKind::Extract {
             continue;
@@ -475,7 +427,6 @@ fn rewrite_object(
     let mut emitted_any = false;
     let mut seen_input_member = false;
     let mut satisfied_add_keys: Vec<&str> = Vec::new();
-    let mut seen_op_keys: Vec<&str> = Vec::new();
 
     loop {
         skip_ws(input, i);
@@ -496,37 +447,33 @@ fn rewrite_object(
         skip_ws(input, i);
         expect_byte(input, i, b':')?;
 
-        let first_for_key = !seen_op_keys.iter().any(|k| *k == key.as_ref());
-        if first_for_key {
-            if let Some(op_idx) = op_set.index.mutate_child_key(&session.path, key.as_ref()) {
-                let op = &op_set.ops[op_idx as usize];
-                if op.kind.is_mutating() {
-                    seen_op_keys.push(op.tokens.last().map_or("", String::as_str));
-                    session.path.push(PathToken::Key(key.into_owned()));
-                    let step = apply_object_mutate(
-                        input,
-                        i,
-                        key_span,
-                        op_idx,
-                        op,
-                        &mut out,
-                        &mut emitted_any,
-                        depth,
-                        op_set,
-                        session,
-                    )?;
-                    if op.kind == OpKind::Add
-                        && matches!(step, WalkStep::Continue)
-                        && resolve_payload(op_idx, op, session).is_some()
-                    {
-                        satisfied_add_keys.push(op.tokens.last().map_or("", String::as_str));
-                    }
-                    session.path.pop();
-                    if matches!(step, WalkStep::Done) {
-                        return Ok(WalkStep::Done);
-                    }
-                    continue;
+        if let Some(op_idx) = op_set.index.mutate_child_key(&session.path, key.as_ref()) {
+            let op = &op_set.ops[op_idx as usize];
+            if op.kind.is_mutating() {
+                session.path.push(PathToken::Key(key.into_owned()));
+                let step = apply_object_mutate(
+                    input,
+                    i,
+                    key_span,
+                    op_idx,
+                    op,
+                    &mut out,
+                    &mut emitted_any,
+                    depth,
+                    op_set,
+                    session,
+                )?;
+                if op.kind == OpKind::Add
+                    && matches!(step, WalkStep::Continue)
+                    && resolve_payload(op_idx, op, session).is_some()
+                {
+                    satisfied_add_keys.push(op.tokens.last().map_or("", String::as_str));
                 }
+                session.path.pop();
+                if matches!(step, WalkStep::Done) {
+                    return Ok(WalkStep::Done);
+                }
+                continue;
             }
         }
 
@@ -547,7 +494,13 @@ fn rewrite_object(
         }
     }
 
-    inject_object_adds(op_set, &satisfied_add_keys, out.as_deref_mut(), &mut emitted_any, session);
+    inject_object_adds(
+        op_set,
+        &satisfied_add_keys,
+        out.as_deref_mut(),
+        &mut emitted_any,
+        session,
+    );
     if let Some(out) = out.as_mut() {
         out.push(b'}');
     }
@@ -571,17 +524,21 @@ fn apply_object_mutate(
     match op.kind {
         OpKind::Remove => capture_value_at_path(input, i, depth, op_set, session),
         OpKind::Replace | OpKind::Add => {
+            skip_ws(input, i);
+            let value_start = *i;
             let step = capture_value_at_path(input, i, depth, op_set, session)?;
             if matches!(step, WalkStep::Done) {
                 return Ok(WalkStep::Done);
             }
-            if let Some(payload) = resolve_payload(op_idx, op, session)
-                && let Some(out) = out.as_mut()
-            {
-                emit_separator(out, emitted_any);
-                out.extend_from_slice(key_span);
-                out.push(b':');
-                out.extend_from_slice(&payload);
+            if let Some(out_buf) = out.as_mut() {
+                if let Some(payload) = resolve_payload(op_idx, op, session) {
+                    emit_separator(out_buf, emitted_any);
+                    out_buf.extend_from_slice(key_span);
+                    out_buf.push(b':');
+                    out_buf.extend_from_slice(&payload);
+                } else {
+                    emit_original_member(input, value_start, *i, key_span, out_buf, emitted_any)?;
+                }
             }
             Ok(step)
         },
@@ -614,10 +571,11 @@ fn inject_object_adds(
         let Some(payload) = resolve_payload(op_idx, op, session) else {
             continue;
         };
+        let Some(encoded) = &op.encoded_last_token else {
+            continue;
+        };
         emit_separator(out, emitted_any);
-        if let Some(encoded) = &op.encoded_last_token {
-            out.extend_from_slice(encoded);
-        }
+        out.extend_from_slice(encoded);
         out.push(b':');
         out.extend_from_slice(&payload);
     }
@@ -672,10 +630,13 @@ fn rewrite_array(
             }
         }
 
-        let replace_remove = op_set.index.mutate_at_index(&session.path, orig_idx).and_then(|op_idx| {
-            let op = &op_set.ops[op_idx as usize];
-            matches!(op.kind, OpKind::Remove | OpKind::Replace).then_some(op_idx)
-        });
+        let replace_remove = op_set
+            .index
+            .mutate_at_index(&session.path, orig_idx)
+            .and_then(|op_idx| {
+                let op = &op_set.ops[op_idx as usize];
+                matches!(op.kind, OpKind::Remove | OpKind::Replace).then_some(op_idx)
+            });
 
         if let Some(op_idx) = replace_remove {
             let op = &op_set.ops[op_idx as usize];
@@ -683,16 +644,20 @@ fn rewrite_array(
             let step = match op.kind {
                 OpKind::Remove => capture_value_at_path(input, i, depth, op_set, session)?,
                 OpKind::Replace => {
+                    skip_ws(input, i);
+                    let value_start = *i;
                     let cap = capture_value_at_path(input, i, depth, op_set, session)?;
                     if matches!(cap, WalkStep::Done) {
                         session.path.pop();
                         return Ok(WalkStep::Done);
                     }
-                    if let Some(payload) = resolve_payload(op_idx, op, session)
-                        && let Some(out) = out.as_mut()
-                    {
-                        emit_separator(out, &mut emitted_any);
-                        out.extend_from_slice(&payload);
+                    if let Some(out_buf) = out.as_mut() {
+                        emit_separator(out_buf, &mut emitted_any);
+                        if let Some(payload) = resolve_payload(op_idx, op, session) {
+                            out_buf.extend_from_slice(&payload);
+                        } else {
+                            copy_input_span(input, value_start, *i, out_buf)?;
+                        }
                     }
                     cap
                 },
@@ -758,6 +723,28 @@ fn emit_separator(out: &mut Vec<u8>, emitted_any: &mut bool) {
         out.push(b',');
     }
     *emitted_any = true;
+}
+
+/// Re-emit an object member whose mutating op was skipped (missing context).
+fn emit_original_member(
+    input: &[u8],
+    value_start: usize,
+    value_end: usize,
+    key_span: &[u8],
+    out: &mut Vec<u8>,
+    emitted_any: &mut bool,
+) -> Result<(), RewriteError> {
+    emit_separator(out, emitted_any);
+    out.extend_from_slice(key_span);
+    out.push(b':');
+    copy_input_span(input, value_start, value_end, out)
+}
+
+/// Copy `input[start..end]` into `out`.
+fn copy_input_span(input: &[u8], start: usize, end: usize, out: &mut Vec<u8>) -> Result<(), RewriteError> {
+    let span = input.get(start..end).ok_or(RewriteError::InvalidJson)?;
+    out.extend_from_slice(span);
+    Ok(())
 }
 
 /// Increment nesting; fail if [`MAX_JSON_DEPTH`] would be exceeded.
