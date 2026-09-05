@@ -96,8 +96,10 @@ impl OpPathIndex {
             for (depth, token) in op.tokens.iter().enumerate() {
                 let is_last = depth + 1 == op.tokens.len();
 
+                // JSON Pointer "-" is array-append for add, not object key "-".
                 if token == "-" && is_last && op.kind == OpKind::Add {
                     nodes[node_id as usize].array_append = Some(idx_u32);
+                    break;
                 }
 
                 let parent_idx = node_id;

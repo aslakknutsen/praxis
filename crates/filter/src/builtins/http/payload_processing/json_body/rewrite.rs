@@ -564,6 +564,9 @@ fn inject_object_adds(
         let Some(last) = op.tokens.last() else {
             continue;
         };
+        if last == "-" {
+            continue;
+        }
         if satisfied.contains(&last.as_str()) {
             continue;
         }
