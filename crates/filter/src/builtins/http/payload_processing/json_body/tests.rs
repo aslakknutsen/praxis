@@ -947,11 +947,15 @@ async fn extract_duplicate_keys_keeps_last() {
 }
 
 #[test]
-fn array_append_pointer_on_object_is_key_dash() {
+fn array_append_on_object_is_skipped() {
     let out = rewrite_str(r#"{"a":1}"#, &[resolved(OpKind::Add, "/-", Some("2"))]).unwrap();
-    let got: serde_json::Value =
-        serde_json::from_str(&out).unwrap_or_else(|e| panic!("rewrite must emit valid JSON, got {out:?}: {e}"));
-    assert_eq!(got, json!({"a": 1, "-": 2}));
+    assert_eq!(out, r#"{"a":1}"#, "add / - is array-only; objects are left unchanged");
+}
+
+#[test]
+fn array_append_does_not_replace_object_dash_key() {
+    let out = rewrite_str(r#"{"-":1}"#, &[resolved(OpKind::Add, "/-", Some("2"))]).unwrap();
+    assert_eq!(out, r#"{"-":1}"#, "array append must not rewrite object key '-'");
 }
 
 #[test]

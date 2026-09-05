@@ -11,7 +11,8 @@
 //! the wire. Extract-only directions use `BodyAccess::ReadOnly`. Duplicate
 //! object keys are preserved unless an operation targets that key: remove
 //! drops every match, replace and add-over-existing rewrite every match, add
-//! injects once when none exist, and extract keeps the last match.
+//! injects once when none exist, and extract keeps the last match. Add `/-`
+//! appends to arrays only; on an object that operation is skipped.
 
 #[cfg(feature = "bench-internals")]
 pub mod bench;
@@ -69,8 +70,9 @@ use crate::{
 /// (the original member is left unchanged). Duplicate object member names
 /// are not canonicalized. Remove drops every matching member. Replace and
 /// add-over-existing rewrite every matching member; add injects once only
-/// when no match exists. Extract keeps the last matching value. Invalid
-/// JSON follows [`on_invalid`].
+/// when no match exists. Extract keeps the last matching value. Add `/-`
+/// appends to arrays only; on an object the operation is skipped (same as a
+/// missing parent). Invalid JSON follows [`on_invalid`].
 ///
 /// Extract-only directions are `ReadOnly`. Mixed extract and rewrite uses one
 /// walk; metadata-sourced add/replace resolve lazily at each splice site and
