@@ -3,7 +3,7 @@
 
 # `json_body`
 
-Rewrites JSON request and response bodies using JSON Pointer add, remove, replace, and extract.
+Rewrites JSON request bodies with JSON Pointer add, remove, replace, and extract, and response bodies with remove and extract.
 
 ## Configuration Notes
 
@@ -11,7 +11,7 @@ Applies mutating operations in one pass over a `StreamBuffer`-held body. Extract
 
 Extract-only directions are `ReadOnly`. Mixed extract and rewrite uses one walk; metadata-sourced add/replace resolve lazily at each splice site and are skipped when the extract value is not yet available.
 
-Response `Content-Length` is already committed when body hooks run. Shrinking responses are padded with trailing spaces; growth is refused and the original body is forwarded.
+Response `Content-Length` is already committed when body hooks run. `response_add` and `response_replace` are rejected at config time. `response_remove` shrinks are padded with trailing spaces.
 
 ## Configuration
 
@@ -38,15 +38,15 @@ Response `Content-Length` is already committed when body hooks run. Shrinking re
 | `request_extract[].structured_metadata` | StructuredMetadataRef | no | Namespaced structured metadata to write. Mutually exclusive with `metadata`. |
 | `request_extract[].structured_metadata.namespace` | string | yes | Structured-metadata namespace. |
 | `request_extract[].structured_metadata.key` | string | yes | Field within the namespace object. |
-| `response_add` | PointerOpConfig[] | no | Pointers to insert (or overwrite) on the response body. |
+| `response_add` | PointerOpConfig[] | no | Rejected when non-empty. Response add can grow the body after `Content-Length` is committed. |
 | `response_add[].pointer` | string | yes | JSON Pointer (RFC 6901) identifying the target. |
 | `response_add[].value` | any | no | Static JSON value (YAML maps to JSON). Mutually exclusive with the other sources. |
 | `response_add[].metadata` | string | no | `filter_metadata` key; injected as a JSON string. Mutually exclusive with the other sources. |
 | `response_add[].structured_metadata` | StructuredMetadataRef | no | Namespaced structured metadata; injected as JSON as-is. Mutually exclusive with the other sources. |
 | `response_add[].structured_metadata.namespace` | string | yes | Structured-metadata namespace. |
 | `response_add[].structured_metadata.key` | string | yes | Field within the namespace object. |
-| `response_remove` | string[] | no | Pointers to omit from the response body. |
-| `response_replace` | PointerOpConfig[] | no | Pointers to overwrite on the response body when present. |
+| `response_remove` | string[] | no | Pointers to omit from the response body. Shrinks are padded with trailing spaces so `Content-Length` still matches. |
+| `response_replace` | PointerOpConfig[] | no | Rejected when non-empty. Response replace can grow the body after `Content-Length` is committed. |
 | `response_replace[].pointer` | string | yes | JSON Pointer (RFC 6901) identifying the target. |
 | `response_replace[].value` | any | no | Static JSON value (YAML maps to JSON). Mutually exclusive with the other sources. |
 | `response_replace[].metadata` | string | no | `filter_metadata` key; injected as a JSON string. Mutually exclusive with the other sources. |
