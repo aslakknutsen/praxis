@@ -6,7 +6,7 @@
 use bytes::Bytes;
 use memchr::memchr2;
 
-use super::error::{MAX_JSON_DEPTH, RewriteError};
+use super::error::{JsonError, MAX_JSON_DEPTH};
 
 // -----------------------------------------------------------------------------
 // JSON string encoding
@@ -70,15 +70,15 @@ pub(super) fn skip_ws(input: &[u8], i: &mut usize) {
 }
 
 /// Next byte at `i`, or invalid JSON if past the end.
-pub(super) fn next_byte(input: &[u8], i: usize) -> Result<u8, RewriteError> {
-    input.get(i).copied().ok_or(RewriteError::InvalidJson)
+pub(super) fn next_byte(input: &[u8], i: usize) -> Result<u8, JsonError> {
+    input.get(i).copied().ok_or(JsonError::InvalidJson)
 }
 
 /// Consume `expected` at `i`, or fail if the next byte differs.
-pub(super) fn expect_byte(input: &[u8], i: &mut usize, expected: u8) -> Result<(), RewriteError> {
+pub(super) fn expect_byte(input: &[u8], i: &mut usize, expected: u8) -> Result<(), JsonError> {
     let b = next_byte(input, *i)?;
     if b != expected {
-        return Err(RewriteError::InvalidJson);
+        return Err(JsonError::InvalidJson);
     }
     *i += 1;
     Ok(())
@@ -89,16 +89,16 @@ pub(super) fn expect_byte(input: &[u8], i: &mut usize, expected: u8) -> Result<(
 // -----------------------------------------------------------------------------
 
 /// Skip a JSON string; returns whether escape sequences were present.
-pub(super) fn skip_string_with_meta(input: &[u8], i: &mut usize) -> Result<bool, RewriteError> {
+pub(super) fn skip_string_with_meta(input: &[u8], i: &mut usize) -> Result<bool, JsonError> {
     expect_byte(input, i, b'"')?;
     let mut escaped = false;
     loop {
-        let tail = input.get(*i..).ok_or(RewriteError::InvalidJson)?;
+        let tail = input.get(*i..).ok_or(JsonError::InvalidJson)?;
         let Some(rel_off) = memchr2(b'"', b'\\', tail) else {
-            return Err(RewriteError::InvalidJson);
+            return Err(JsonError::InvalidJson);
         };
         *i += rel_off;
-        let b = *input.get(*i).ok_or(RewriteError::InvalidJson)?;
+        let b = *input.get(*i).ok_or(JsonError::InvalidJson)?;
         if b == b'"' {
             *i += 1;
             return Ok(escaped);
@@ -111,7 +111,7 @@ pub(super) fn skip_string_with_meta(input: &[u8], i: &mut usize) -> Result<bool,
             for _ in 0..4 {
                 let h = next_byte(input, *i)?;
                 if !h.is_ascii_hexdigit() {
-                    return Err(RewriteError::InvalidJson);
+                    return Err(JsonError::InvalidJson);
                 }
                 *i += 1;
             }
@@ -120,7 +120,7 @@ pub(super) fn skip_string_with_meta(input: &[u8], i: &mut usize) -> Result<bool,
 }
 
 /// Skip a JSON string, including escapes.
-pub(super) fn skip_string(input: &[u8], i: &mut usize) -> Result<(), RewriteError> {
+pub(super) fn skip_string(input: &[u8], i: &mut usize) -> Result<(), JsonError> {
     skip_string_with_meta(input, i).map(|_| ())
 }
 
@@ -132,7 +132,7 @@ pub(super) fn skip_string(input: &[u8], i: &mut usize) -> Result<(), RewriteErro
 ///
 /// Recursive tokenizer walk; faster than flat scanning on large unchanged spans
 /// (e.g. multi-megabyte `messages` arrays in chat completion bodies).
-pub(super) fn skip_value(input: &[u8], i: &mut usize, depth: u32) -> Result<(), RewriteError> {
+pub(super) fn skip_value(input: &[u8], i: &mut usize, depth: u32) -> Result<(), JsonError> {
     skip_ws(input, i);
     match next_byte(input, *i)? {
         b'{' => skip_object(input, i, depth),
@@ -142,12 +142,12 @@ pub(super) fn skip_value(input: &[u8], i: &mut usize, depth: u32) -> Result<(), 
         b'f' => skip_literal(input, i, b"false"),
         b'n' => skip_literal(input, i, b"null"),
         b'-' | b'0'..=b'9' => skip_number(input, i),
-        _ => Err(RewriteError::InvalidJson),
+        _ => Err(JsonError::InvalidJson),
     }
 }
 
 /// Skip an object `{...}` including nested values.
-fn skip_object(input: &[u8], i: &mut usize, depth: u32) -> Result<(), RewriteError> {
+fn skip_object(input: &[u8], i: &mut usize, depth: u32) -> Result<(), JsonError> {
     let depth = bump_depth(depth)?;
     expect_byte(input, i, b'{')?;
     let mut seen_member = false;
@@ -161,7 +161,7 @@ fn skip_object(input: &[u8], i: &mut usize, depth: u32) -> Result<(), RewriteErr
             expect_byte(input, i, b',')?;
             skip_ws(input, i);
             if next_byte(input, *i)? == b'}' {
-                return Err(RewriteError::InvalidJson);
+                return Err(JsonError::InvalidJson);
             }
         }
         skip_string(input, i)?;
@@ -173,7 +173,7 @@ fn skip_object(input: &[u8], i: &mut usize, depth: u32) -> Result<(), RewriteErr
 }
 
 /// Skip an array `[...]` including nested values.
-fn skip_array(input: &[u8], i: &mut usize, depth: u32) -> Result<(), RewriteError> {
+fn skip_array(input: &[u8], i: &mut usize, depth: u32) -> Result<(), JsonError> {
     let depth = bump_depth(depth)?;
     expect_byte(input, i, b'[')?;
     let mut seen_elem = false;
@@ -187,7 +187,7 @@ fn skip_array(input: &[u8], i: &mut usize, depth: u32) -> Result<(), RewriteErro
             expect_byte(input, i, b',')?;
             skip_ws(input, i);
             if next_byte(input, *i)? == b']' {
-                return Err(RewriteError::InvalidJson);
+                return Err(JsonError::InvalidJson);
             }
         }
         skip_value(input, i, depth)?;
@@ -196,20 +196,20 @@ fn skip_array(input: &[u8], i: &mut usize, depth: u32) -> Result<(), RewriteErro
 }
 
 /// Increment nesting; fail if [`MAX_JSON_DEPTH`] would be exceeded.
-pub(super) fn bump_depth(depth: u32) -> Result<u32, RewriteError> {
+pub(super) fn bump_depth(depth: u32) -> Result<u32, JsonError> {
     let next = depth.saturating_add(1);
     if next > MAX_JSON_DEPTH {
-        return Err(RewriteError::Depth);
+        return Err(JsonError::Depth);
     }
     Ok(next)
 }
 
 /// Skip a JSON literal (`true`, `false`, or `null`).
-pub(super) fn skip_literal(input: &[u8], i: &mut usize, lit: &[u8]) -> Result<(), RewriteError> {
-    let slice = input.get(*i..).ok_or(RewriteError::InvalidJson)?;
-    let prefix = slice.get(..lit.len()).ok_or(RewriteError::InvalidJson)?;
+pub(super) fn skip_literal(input: &[u8], i: &mut usize, lit: &[u8]) -> Result<(), JsonError> {
+    let slice = input.get(*i..).ok_or(JsonError::InvalidJson)?;
+    let prefix = slice.get(..lit.len()).ok_or(JsonError::InvalidJson)?;
     if prefix != lit {
-        return Err(RewriteError::InvalidJson);
+        return Err(JsonError::InvalidJson);
     }
     *i += lit.len();
     Ok(())
@@ -223,7 +223,7 @@ fn skip_digits(input: &[u8], i: &mut usize) {
 }
 
 /// Skip a JSON number (integer, fraction, exponent).
-pub(super) fn skip_number(input: &[u8], i: &mut usize) -> Result<(), RewriteError> {
+pub(super) fn skip_number(input: &[u8], i: &mut usize) -> Result<(), JsonError> {
     let start = *i;
     if next_byte(input, *i)? == b'-' {
         *i += 1;
@@ -234,21 +234,21 @@ pub(super) fn skip_number(input: &[u8], i: &mut usize) -> Result<(), RewriteErro
     } else if first.is_ascii_digit() {
         skip_digits(input, i);
     } else {
-        return Err(RewriteError::InvalidJson);
+        return Err(JsonError::InvalidJson);
     }
     skip_number_frac_exp(input, i)?;
     if *i == start {
-        return Err(RewriteError::InvalidJson);
+        return Err(JsonError::InvalidJson);
     }
     Ok(())
 }
 
 /// Skip optional fraction and exponent after the integer part of a number.
-fn skip_number_frac_exp(input: &[u8], i: &mut usize) -> Result<(), RewriteError> {
+fn skip_number_frac_exp(input: &[u8], i: &mut usize) -> Result<(), JsonError> {
     if input.get(*i).copied() == Some(b'.') {
         *i += 1;
         if !input.get(*i).copied().is_some_and(|b| b.is_ascii_digit()) {
-            return Err(RewriteError::InvalidJson);
+            return Err(JsonError::InvalidJson);
         }
         skip_digits(input, i);
     }
@@ -258,7 +258,7 @@ fn skip_number_frac_exp(input: &[u8], i: &mut usize) -> Result<(), RewriteError>
             *i += 1;
         }
         if !input.get(*i).copied().is_some_and(|b| b.is_ascii_digit()) {
-            return Err(RewriteError::InvalidJson);
+            return Err(JsonError::InvalidJson);
         }
         skip_digits(input, i);
     }

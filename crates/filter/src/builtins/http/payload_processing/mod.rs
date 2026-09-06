@@ -23,7 +23,7 @@ pub const MAX_DYNAMIC_VALUE_LEN: usize = 256;
 
 pub use compression::CompressionFilter;
 pub use grpc_web::{GrpcWebFilter, frame::encode_trailer_frame};
-pub use json_body::JsonBodyFilter;
+pub use json_body::{JsonBodyFilter, JsonBodyOps};
 #[cfg(feature = "bench-internals")]
 pub use json_body::bench;
 pub use json_body_field::JsonBodyFieldFilter;

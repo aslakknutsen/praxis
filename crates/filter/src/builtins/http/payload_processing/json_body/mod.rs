@@ -4,17 +4,10 @@
 //! JSON Pointer rewrite/extract filter. Operator semantics: [`JsonBodyFilter`].
 //!
 //! Walks the document with a path-stack tokenizer (no JSON DOM). Unused
-//! subtrees are copied as byte spans.
-
-#[cfg(feature = "bench-internals")]
-pub mod bench;
+//! subtrees are copied as byte spans. Programmatic construction:
+//! [`JsonBodyFilter::from_ops`] and [`crate::json_ops::JsonOps::builder`].
 
 mod config;
-mod error;
-mod index;
-mod pointer;
-mod rewrite;
-mod skip;
 
 #[cfg(test)]
 #[expect(clippy::allow_attributes, reason = "blanket test suppressions")]
@@ -33,17 +26,43 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use tracing::warn;
 
-use self::{
-    config::{CompiledOpSet, CompiledOps, JsonBodyConfig, build_ops},
-    rewrite::rewrite_document,
-};
+use self::config::{CompiledOps, JsonBodyConfig, build_ops};
 use crate::{
     FilterAction, FilterError, Rejection,
-    body::{BodyAccess, BodyMode},
-    builtins::http::payload_processing::OnInvalidBehavior,
+    body::{BodyAccess, BodyMode, DEFAULT_JSON_BODY_MAX_BYTES},
+    builtins::http::payload_processing::{OnInvalidBehavior, config_validation::validate_max_body_bytes},
     factory::parse_filter_config,
     filter::{HttpFilter, HttpFilterContext},
+    json_ops::{HttpJsonStore, JsonOps},
 };
+
+// -----------------------------------------------------------------------------
+// Construction
+// -----------------------------------------------------------------------------
+
+/// Request and response op sets plus HTTP framing policy.
+#[derive(Clone, Debug)]
+pub struct JsonBodyOps {
+    /// Request-body operations.
+    pub request: JsonOps,
+    /// Response-body operations.
+    pub response: JsonOps,
+    /// Maximum request/response body size for `StreamBuffer`.
+    pub max_body_bytes: usize,
+    /// Behavior when the body is not valid JSON.
+    pub on_invalid: OnInvalidBehavior,
+}
+
+impl Default for JsonBodyOps {
+    fn default() -> Self {
+        Self {
+            request: JsonOps::empty(),
+            response: JsonOps::empty(),
+            max_body_bytes: DEFAULT_JSON_BODY_MAX_BYTES,
+            on_invalid: OnInvalidBehavior::Continue,
+        }
+    }
+}
 
 // -----------------------------------------------------------------------------
 // JsonBodyFilter
@@ -120,9 +139,9 @@ pub struct JsonBodyFilter {
     /// Behavior when the body is not valid JSON.
     on_invalid: OnInvalidBehavior,
     /// Compiled request-body operations.
-    request_ops: CompiledOpSet,
+    request_ops: JsonOps,
     /// Compiled response-body operations.
-    response_ops: CompiledOpSet,
+    response_ops: JsonOps,
 }
 
 impl JsonBodyFilter {
@@ -138,11 +157,38 @@ impl JsonBodyFilter {
     pub fn from_config(config: &serde_yaml::Value) -> Result<Box<dyn HttpFilter>, FilterError> {
         let cfg: JsonBodyConfig = parse_filter_config("json_body", config)?;
         let (max_body_bytes, on_invalid, CompiledOps { request, response }) = build_ops(cfg)?;
-        Ok(Box::new(Self {
+        Self::from_ops(JsonBodyOps {
+            request,
+            response,
             max_body_bytes,
             on_invalid,
-            request_ops: request,
-            response_ops: response,
+        })
+    }
+
+    /// Create a filter from already compiled [`JsonOps`].
+    ///
+    /// YAML [`from_config`](Self::from_config) uses this after compiling
+    /// through [`JsonOps::builder`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FilterError`] if both directions are empty, `max_body_bytes`
+    /// is out of range, or response ops can grow the body.
+    pub fn from_ops(ops: JsonBodyOps) -> Result<Box<dyn HttpFilter>, FilterError> {
+        validate_max_body_bytes("json_body", ops.max_body_bytes)?;
+        if ops.request.is_empty() && ops.response.is_empty() {
+            return Err("json_body: at least one add, remove, replace, or extract operation is required".into());
+        }
+        if ops.response.can_grow() {
+            return Err("json_body: response_add and response_replace are not supported; \
+                 response Content-Length is already committed. Use response_remove or response_extract"
+                .into());
+        }
+        Ok(Box::new(Self {
+            max_body_bytes: ops.max_body_bytes,
+            on_invalid: ops.on_invalid,
+            request_ops: ops.request,
+            response_ops: ops.response,
         }))
     }
 }
@@ -183,7 +229,7 @@ impl HttpFilter for JsonBodyFilter {
         body: &mut Option<Bytes>,
         end_of_stream: bool,
     ) -> Result<FilterAction, FilterError> {
-        if !self.request_ops.extract_only && !end_of_stream {
+        if !self.request_ops.is_extract_only() && !end_of_stream {
             return Ok(FilterAction::Continue);
         }
         apply_rewrite(
@@ -202,7 +248,7 @@ impl HttpFilter for JsonBodyFilter {
         body: &mut Option<Bytes>,
         end_of_stream: bool,
     ) -> Result<FilterAction, FilterError> {
-        if !self.response_ops.extract_only && !end_of_stream {
+        if !self.response_ops.is_extract_only() && !end_of_stream {
             return Ok(FilterAction::Continue);
         }
         apply_rewrite(
@@ -235,14 +281,14 @@ enum FitMode {
     reason = "framing policy is part of the rewrite apply path"
 )]
 fn apply_rewrite(
-    op_set: &CompiledOpSet,
+    op_set: &JsonOps,
     on_invalid: OnInvalidBehavior,
     ctx: &mut HttpFilterContext<'_>,
     body: &mut Option<Bytes>,
     fit: FitMode,
     end_of_stream: bool,
 ) -> Result<FilterAction, FilterError> {
-    if op_set.ops.is_empty() {
+    if op_set.is_empty() {
         return Ok(FilterAction::Continue);
     }
 
@@ -250,15 +296,16 @@ fn apply_rewrite(
         return handle_invalid(on_invalid, "empty body");
     };
     let original_len = original.len();
-    let result = rewrite_document(original, op_set, Some(ctx));
+    let mut store = HttpJsonStore::new(ctx);
+    let result = op_set.apply(original, Some(&mut store));
 
     match result {
-        Ok(_outcome) if op_set.extract_only => Ok(FilterAction::BodyDone),
+        Ok(_outcome) if op_set.is_extract_only() => Ok(FilterAction::BodyDone),
         Ok(outcome) => {
             apply_fitted_body(body, original_len, outcome.output.unwrap_or_default(), fit);
             Ok(FilterAction::BodyDone)
         },
-        Err(_err) if op_set.extract_only && !end_of_stream => Ok(FilterAction::Continue),
+        Err(_err) if op_set.is_extract_only() && !end_of_stream => Ok(FilterAction::Continue),
         Err(err) => handle_invalid(on_invalid, err.as_str()),
     }
 }
@@ -280,10 +327,10 @@ fn apply_fitted_body(body: &mut Option<Bytes>, original_len: usize, rewritten: V
 }
 
 /// Body access for one direction.
-fn direction_access(op_set: &CompiledOpSet) -> BodyAccess {
-    if op_set.ops.is_empty() {
+fn direction_access(op_set: &JsonOps) -> BodyAccess {
+    if op_set.is_empty() {
         BodyAccess::None
-    } else if op_set.extract_only {
+    } else if op_set.is_extract_only() {
         BodyAccess::ReadOnly
     } else {
         BodyAccess::ReadWrite

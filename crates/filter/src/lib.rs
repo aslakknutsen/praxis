@@ -55,6 +55,7 @@ mod factory;
 mod filter;
 mod filtered_subrequest;
 mod grpc_response;
+pub mod json_ops;
 pub(crate) mod load_balancing;
 mod metrics;
 pub(crate) mod path_match;
