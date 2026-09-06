@@ -6,28 +6,11 @@
 use bytes::Bytes;
 use serde_json::json;
 
-use super::{
-    JsonBodyFilter,
-    pointer::compile_pointer,
-    rewrite::{OpKind, ResolvedOp, RewriteError, rewrite},
+use super::{JsonBodyFilter, JsonBodyOps};
+use crate::{
+    FilterAction,
+    json_ops::{JsonOps, JsonValue},
 };
-use crate::FilterAction;
-
-// -----------------------------------------------------------------------------
-// Rewrite helpers
-// -----------------------------------------------------------------------------
-
-fn resolved(kind: OpKind, pointer: &str, payload: Option<&str>) -> ResolvedOp {
-    ResolvedOp {
-        tokens: compile_pointer(pointer).unwrap(),
-        kind,
-        payload: payload.map(|s| Bytes::from(s.to_owned())),
-    }
-}
-
-fn rewrite_str(input: &str, ops: &[ResolvedOp]) -> Result<String, RewriteError> {
-    rewrite(input.as_bytes(), ops).map(|b| String::from_utf8(b).unwrap())
-}
 
 fn parse_filter(yaml: &str) -> Box<dyn crate::HttpFilter> {
     let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
@@ -38,10 +21,6 @@ fn parse_err(yaml: &str) -> String {
     let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
     JsonBodyFilter::from_config(&value).err().unwrap().to_string()
 }
-
-// -----------------------------------------------------------------------------
-// Config
-// -----------------------------------------------------------------------------
 
 #[test]
 fn parses_header_like_config() {
@@ -58,6 +37,31 @@ fn parses_header_like_config() {
         "#,
     );
     assert_eq!(filter.name(), "json_body", "filter type name");
+}
+
+#[test]
+fn from_ops_constructs_without_yaml() {
+    let request = JsonOps::builder()
+        .replace("/model", JsonValue::static_json(json!("forced-model")).unwrap())
+        .unwrap()
+        .build()
+        .unwrap();
+    let filter = JsonBodyFilter::from_ops(JsonBodyOps {
+        request,
+        ..JsonBodyOps::default()
+    })
+    .unwrap();
+    assert_eq!(filter.name(), "json_body");
+    assert_eq!(filter.request_body_access(), crate::BodyAccess::ReadWrite);
+}
+
+#[test]
+fn from_ops_rejects_empty() {
+    let err = JsonBodyFilter::from_ops(JsonBodyOps::default())
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(err.contains("at least one"), "got: {err}");
 }
 
 #[test]
@@ -153,268 +157,6 @@ fn rejects_both_value_and_metadata() {
 
 // -----------------------------------------------------------------------------
 // Tokenizer: objects
-// -----------------------------------------------------------------------------
-
-#[test]
-fn replace_object_field() {
-    let out = rewrite_str(
-        r#"{"model":"old","n":1}"#,
-        &[resolved(OpKind::Replace, "/model", Some(r#""forced""#))],
-    )
-    .unwrap();
-    assert_eq!(out, r#"{"model":"forced","n":1}"#);
-}
-
-#[test]
-fn replace_missing_is_noop() {
-    let out = rewrite_str(r#"{"n":1}"#, &[resolved(OpKind::Replace, "/model", Some(r#""x""#))]).unwrap();
-    assert_eq!(out, r#"{"n":1}"#);
-}
-
-#[test]
-fn remove_first_middle_last_only() {
-    assert_eq!(
-        rewrite_str(r#"{"a":1,"b":2,"c":3}"#, &[resolved(OpKind::Remove, "/a", None)]).unwrap(),
-        r#"{"b":2,"c":3}"#
-    );
-    assert_eq!(
-        rewrite_str(r#"{"a":1,"b":2,"c":3}"#, &[resolved(OpKind::Remove, "/b", None)]).unwrap(),
-        r#"{"a":1,"c":3}"#
-    );
-    assert_eq!(
-        rewrite_str(r#"{"a":1,"b":2,"c":3}"#, &[resolved(OpKind::Remove, "/c", None)]).unwrap(),
-        r#"{"a":1,"b":2}"#
-    );
-    assert_eq!(
-        rewrite_str(r#"{"a":1}"#, &[resolved(OpKind::Remove, "/a", None)]).unwrap(),
-        "{}"
-    );
-}
-
-#[test]
-fn remove_missing_is_noop() {
-    let out = rewrite_str(r#"{"a":1}"#, &[resolved(OpKind::Remove, "/nope", None)]).unwrap();
-    assert_eq!(out, r#"{"a":1}"#);
-}
-
-#[test]
-fn add_missing_object_field() {
-    let out = rewrite_str(r#"{"a":1}"#, &[resolved(OpKind::Add, "/b", Some("2"))]).unwrap();
-    assert_eq!(out, r#"{"a":1,"b":2}"#);
-}
-
-#[test]
-fn add_to_empty_object() {
-    let out = rewrite_str("{}", &[resolved(OpKind::Add, "/k", Some(r#""v""#))]).unwrap();
-    assert_eq!(out, r#"{"k":"v"}"#);
-}
-
-#[test]
-fn add_existing_object_key_overwrites() {
-    let out = rewrite_str(r#"{"a":1}"#, &[resolved(OpKind::Add, "/a", Some("9"))]).unwrap();
-    assert_eq!(out, r#"{"a":9}"#);
-}
-
-#[test]
-fn missing_parent_skips_add() {
-    let out = rewrite_str(r#"{"a":1}"#, &[resolved(OpKind::Add, "/x/y", Some("1"))]).unwrap();
-    assert_eq!(out, r#"{"a":1}"#);
-}
-
-#[test]
-fn duplicate_keys_remove_all_matches() {
-    let out = rewrite_str(r#"{"a":1,"a":2}"#, &[resolved(OpKind::Remove, "/a", None)]).unwrap();
-    assert_eq!(out, "{}");
-}
-
-#[test]
-fn duplicate_keys_replace_all_matches() {
-    let out = rewrite_str(r#"{"a":1,"a":2,"b":3}"#, &[resolved(OpKind::Replace, "/a", Some("9"))]).unwrap();
-    assert_eq!(out, r#"{"a":9,"a":9,"b":3}"#);
-}
-
-#[test]
-fn duplicate_keys_add_replaces_all_existing() {
-    let out = rewrite_str(r#"{"a":1,"a":2}"#, &[resolved(OpKind::Add, "/a", Some("9"))]).unwrap();
-    assert_eq!(out, r#"{"a":9,"a":9}"#);
-}
-
-#[test]
-fn untargeted_duplicate_keys_are_preserved() {
-    let out = rewrite_str(r#"{"a":1,"a":2}"#, &[resolved(OpKind::Add, "/b", Some("3"))]).unwrap();
-    assert_eq!(out, r#"{"a":1,"a":2,"b":3}"#);
-}
-
-#[test]
-fn remove_object_valued_field() {
-    let out = rewrite_str(
-        r#"{"keep":1,"drop":{"x":2}}"#,
-        &[resolved(OpKind::Remove, "/drop", None)],
-    )
-    .unwrap();
-    assert_eq!(out, r#"{"keep":1}"#);
-}
-
-#[test]
-fn nested_replace() {
-    let out = rewrite_str(
-        r#"{"user":{"id":"old","n":1}}"#,
-        &[resolved(OpKind::Replace, "/user/id", Some(r#""new""#))],
-    )
-    .unwrap();
-    assert_eq!(out, r#"{"user":{"id":"new","n":1}}"#);
-}
-
-#[test]
-fn unused_nested_object_and_array_are_copied() {
-    let out = rewrite_str(
-        r#"{"model":"old","obj":{"id":1,"tag":"bench"},"arr":["a","b","0"]}"#,
-        &[
-            resolved(OpKind::Replace, "/model", Some(r#""forced""#)),
-            resolved(OpKind::Add, "/tenant", Some(r#""acme""#)),
-        ],
-    )
-    .unwrap();
-    let got: serde_json::Value = serde_json::from_str(&out).unwrap();
-    assert_eq!(
-        got,
-        json!({"model":"forced","obj":{"id":1,"tag":"bench"},"arr":["a","b","0"],"tenant":"acme"})
-    );
-}
-
-#[test]
-fn escaped_pointer_key() {
-    let out = rewrite_str(r#"{"a/b":1}"#, &[resolved(OpKind::Replace, "/a~1b", Some("2"))]).unwrap();
-    assert_eq!(out, r#"{"a/b":2}"#);
-}
-
-#[test]
-fn escaped_key_extract_and_replace() {
-    let out = rewrite_str(
-        r#"{"a/b":{"x":1},"keep":true}"#,
-        &[resolved(OpKind::Replace, "/a~1b/x", Some("2"))],
-    )
-    .unwrap();
-    assert_eq!(out, r#"{"a/b":{"x":2},"keep":true}"#);
-}
-
-#[test]
-fn root_replace() {
-    let out = rewrite_str(r#"{"a":1}"#, &[resolved(OpKind::Replace, "", Some("[1,2]"))]).unwrap();
-    assert_eq!(out, "[1,2]");
-}
-
-// -----------------------------------------------------------------------------
-// Tokenizer: arrays
-// -----------------------------------------------------------------------------
-
-#[test]
-fn array_replace_index() {
-    let out = rewrite_str("[1,2,3]", &[resolved(OpKind::Replace, "/1", Some("9"))]).unwrap();
-    assert_eq!(out, "[1,9,3]");
-}
-
-#[test]
-fn array_remove_index() {
-    assert_eq!(
-        rewrite_str("[1,2,3]", &[resolved(OpKind::Remove, "/0", None)]).unwrap(),
-        "[2,3]"
-    );
-    assert_eq!(
-        rewrite_str("[1,2,3]", &[resolved(OpKind::Remove, "/1", None)]).unwrap(),
-        "[1,3]"
-    );
-    assert_eq!(
-        rewrite_str("[1,2,3]", &[resolved(OpKind::Remove, "/2", None)]).unwrap(),
-        "[1,2]"
-    );
-}
-
-#[test]
-fn array_insert_at_index() {
-    let out = rewrite_str("[1,3]", &[resolved(OpKind::Add, "/1", Some("2"))]).unwrap();
-    assert_eq!(out, "[1,2,3]");
-}
-
-#[test]
-fn array_append() {
-    let out = rewrite_str("[1]", &[resolved(OpKind::Add, "/-", Some("2"))]).unwrap();
-    assert_eq!(out, "[1,2]");
-}
-
-#[test]
-fn array_append_empty() {
-    let out = rewrite_str("[]", &[resolved(OpKind::Add, "/-", Some("1"))]).unwrap();
-    assert_eq!(out, "[1]");
-}
-
-#[test]
-fn array_insert_at_length() {
-    let out = rewrite_str("[1,2]", &[resolved(OpKind::Add, "/2", Some("3"))]).unwrap();
-    assert_eq!(out, "[1,2,3]");
-}
-
-#[test]
-fn array_out_of_range_add_skipped() {
-    let out = rewrite_str("[1]", &[resolved(OpKind::Add, "/3", Some("9"))]).unwrap();
-    assert_eq!(out, "[1]");
-}
-
-#[test]
-fn array_append_on_object_is_skipped() {
-    let out = rewrite_str(r#"{"a":1}"#, &[resolved(OpKind::Add, "/-", Some("2"))]).unwrap();
-    assert_eq!(out, r#"{"a":1}"#, "add / - is array-only; objects are left unchanged");
-}
-
-#[test]
-fn array_append_does_not_replace_object_dash_key() {
-    let out = rewrite_str(r#"{"-":1}"#, &[resolved(OpKind::Add, "/-", Some("2"))]).unwrap();
-    assert_eq!(out, r#"{"-":1}"#, "array append must not rewrite object key '-'");
-}
-
-#[test]
-fn numeric_pointer_replace_on_object_key() {
-    let out = rewrite_str(r#"{"0":1,"a":2}"#, &[resolved(OpKind::Replace, "/0", Some("9"))]).unwrap();
-    assert_eq!(out, r#"{"0":9,"a":2}"#);
-}
-
-#[test]
-fn numeric_pointer_add_on_object_emits_key() {
-    let out = rewrite_str(r#"{"a":1}"#, &[resolved(OpKind::Add, "/0", Some("9"))]).unwrap();
-    let got: serde_json::Value =
-        serde_json::from_str(&out).unwrap_or_else(|e| panic!("rewrite must emit valid JSON, got {out:?}: {e}"));
-    assert_eq!(got, json!({"a": 1, "0": 9}));
-}
-
-// -----------------------------------------------------------------------------
-// Invalid JSON
-// -----------------------------------------------------------------------------
-
-#[test]
-fn invalid_json_errors() {
-    assert_eq!(rewrite_str("{", &[]).unwrap_err(), RewriteError::InvalidJson);
-    assert_eq!(rewrite_str(r#"{"a":1,}"#, &[]).unwrap_err(), RewriteError::InvalidJson);
-    assert_eq!(rewrite_str("true extra", &[]).unwrap_err(), RewriteError::InvalidJson);
-}
-
-#[test]
-fn depth_exceeded_errors() {
-    let mut nested = String::from("1");
-    for _ in 0..130 {
-        nested = format!("[{nested}]");
-    }
-    assert_eq!(rewrite_str(&nested, &[]).unwrap_err(), RewriteError::Depth);
-}
-
-#[test]
-fn pretty_printed_object_rewrites() {
-    let input = "{\n  \"a\": 1,\n  \"b\": 2\n}";
-    let out = rewrite_str(input, &[resolved(OpKind::Remove, "/b", None)]).unwrap();
-    assert_eq!(out, r#"{"a":1}"#);
-}
-
-// -----------------------------------------------------------------------------
-// Filter hooks
 // -----------------------------------------------------------------------------
 
 #[tokio::test]
@@ -612,33 +354,6 @@ fn request_body_access_none_when_only_response_ops() {
     assert_eq!(filter.request_body_access(), crate::BodyAccess::None);
     assert_eq!(filter.response_body_access(), crate::BodyAccess::ReadWrite);
 }
-
-#[test]
-fn add_nested_under_existing_object() {
-    let out = rewrite_str(
-        r#"{"user":{"id":1}}"#,
-        &[resolved(OpKind::Add, "/user/role", Some(r#""admin""#))],
-    )
-    .unwrap();
-    assert_eq!(out, r#"{"user":{"id":1,"role":"admin"}}"#);
-}
-
-#[test]
-fn scalar_root_without_matching_ops_copied() {
-    let out = rewrite_str("42", &[resolved(OpKind::Remove, "/a", None)]).unwrap();
-    assert_eq!(out, "42");
-}
-
-#[test]
-fn string_value_with_escapes_copied() {
-    let input = r#"{"a":"x\"y"}"#;
-    let out = rewrite_str(input, &[resolved(OpKind::Add, "/b", Some("1"))]).unwrap();
-    assert_eq!(out, r#"{"a":"x\"y","b":1}"#);
-}
-
-// -----------------------------------------------------------------------------
-// Extract
-// -----------------------------------------------------------------------------
 
 #[test]
 fn rejects_duplicate_extract_pointers() {
