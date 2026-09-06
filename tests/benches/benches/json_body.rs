@@ -26,11 +26,7 @@ use std::hint::black_box;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group};
 use json_body_workload::{BODY_SIZES, BodyLayout, body_for_layout, tokenizer_apply};
 
-criterion_group!(
-    benches,
-    bench_json_body_tokenizer,
-    bench_json_body_tokenizer_spread
-);
+criterion_group!(benches, bench_json_body_tokenizer, bench_json_body_tokenizer_spread);
 
 fn main() {
     benches();

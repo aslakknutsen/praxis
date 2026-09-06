@@ -17,27 +17,11 @@
 
 use std::sync::LazyLock;
 
-use praxis_filter::builtins::http::payload_processing::bench::{RequestOps, apply_request};
+use praxis_filter::json_ops::{ExtractDest, JsonOps, JsonValue};
+use serde_json::json;
 
 /// Default `json_body` max body size (10 MiB).
 pub(crate) const TARGET_10_MIB: usize = 10_485_760;
-
-/// YAML matching the json-body example workload (chat completion field paths).
-pub(crate) const BENCH_YAML: &str = r"
-request_extract:
-  - pointer: /model
-    metadata: original.model
-request_replace:
-  - pointer: /model
-    value: forced-model
-request_add:
-  - pointer: /tenant
-    value: acme
-  - pointer: /original_model
-    metadata: original.model
-request_remove:
-  - /secret
-";
 
 /// Benchmark body size labels and targets.
 pub(crate) const BODY_SIZES: &[(&str, usize)] = &[
@@ -56,27 +40,37 @@ pub(crate) enum BodyLayout {
     Spread,
 }
 
-static REQUEST_OPS: LazyLock<RequestOps> =
-    LazyLock::new(|| RequestOps::from_yaml(BENCH_YAML).expect("bench YAML must compile"));
+static REQUEST_OPS: LazyLock<JsonOps> = LazyLock::new(|| {
+    JsonOps::builder()
+        .extract("/model", ExtractDest::metadata("original.model"))
+        .expect("bench extract")
+        .replace(
+            "/model",
+            JsonValue::static_json(json!("forced-model")).expect("static model"),
+        )
+        .expect("bench replace")
+        .add("/tenant", JsonValue::static_json(json!("acme")).expect("static tenant"))
+        .expect("bench add tenant")
+        .add("/original_model", JsonValue::metadata("original.model"))
+        .expect("bench add original_model")
+        .remove("/secret")
+        .expect("bench remove")
+        .build()
+        .expect("bench ops must compile")
+});
 
 static BODIES_PREFIX_10_KIB: LazyLock<Vec<u8>> = LazyLock::new(|| make_json_body(BodyLayout::Prefix, 10 * 1024));
-static BODIES_PREFIX_256_KIB: LazyLock<Vec<u8>> =
-    LazyLock::new(|| make_json_body(BodyLayout::Prefix, 256 * 1024));
-static BODIES_PREFIX_512_KIB: LazyLock<Vec<u8>> =
-    LazyLock::new(|| make_json_body(BodyLayout::Prefix, 512 * 1024));
-static BODIES_PREFIX_10_MIB: LazyLock<Vec<u8>> =
-    LazyLock::new(|| make_json_body(BodyLayout::Prefix, TARGET_10_MIB));
+static BODIES_PREFIX_256_KIB: LazyLock<Vec<u8>> = LazyLock::new(|| make_json_body(BodyLayout::Prefix, 256 * 1024));
+static BODIES_PREFIX_512_KIB: LazyLock<Vec<u8>> = LazyLock::new(|| make_json_body(BodyLayout::Prefix, 512 * 1024));
+static BODIES_PREFIX_10_MIB: LazyLock<Vec<u8>> = LazyLock::new(|| make_json_body(BodyLayout::Prefix, TARGET_10_MIB));
 
 static BODIES_SPREAD_10_KIB: LazyLock<Vec<u8>> = LazyLock::new(|| make_json_body(BodyLayout::Spread, 10 * 1024));
-static BODIES_SPREAD_256_KIB: LazyLock<Vec<u8>> =
-    LazyLock::new(|| make_json_body(BodyLayout::Spread, 256 * 1024));
-static BODIES_SPREAD_512_KIB: LazyLock<Vec<u8>> =
-    LazyLock::new(|| make_json_body(BodyLayout::Spread, 512 * 1024));
-static BODIES_SPREAD_10_MIB: LazyLock<Vec<u8>> =
-    LazyLock::new(|| make_json_body(BodyLayout::Spread, TARGET_10_MIB));
+static BODIES_SPREAD_256_KIB: LazyLock<Vec<u8>> = LazyLock::new(|| make_json_body(BodyLayout::Spread, 256 * 1024));
+static BODIES_SPREAD_512_KIB: LazyLock<Vec<u8>> = LazyLock::new(|| make_json_body(BodyLayout::Spread, 512 * 1024));
+static BODIES_SPREAD_10_MIB: LazyLock<Vec<u8>> = LazyLock::new(|| make_json_body(BodyLayout::Spread, TARGET_10_MIB));
 
 /// Compiled tokenizer ops for the example workload.
-pub(crate) fn request_ops() -> &'static RequestOps {
+pub(crate) fn request_ops() -> &'static JsonOps {
     &REQUEST_OPS
 }
 
@@ -97,7 +91,11 @@ pub(crate) fn body_for_layout(layout: BodyLayout, label: &str) -> &'static [u8] 
 
 /// Tokenizer path used by Criterion and heap benches.
 pub(crate) fn tokenizer_apply(body: &[u8]) -> Vec<u8> {
-    apply_request(body, request_ops()).expect("tokenizer apply must succeed on fixtures")
+    request_ops()
+        .apply(body, None)
+        .expect("tokenizer apply must succeed on fixtures")
+        .output
+        .expect("mutating bench ops emit a body")
 }
 
 /// Build a chat completion request body of at least `target_bytes`.
@@ -192,10 +190,7 @@ fn append_message_turn(body: &mut String, turn: usize, first_msg: &mut bool) {
     } else {
         format!("bench-turn-{turn}: {}", "x".repeat(48 + (turn % 16)))
     };
-    let _ = std::fmt::Write::write_fmt(
-        body,
-        format_args!(r#"{{"role":"{role}","content":"{content}"}}"#),
-    );
+    let _ = std::fmt::Write::write_fmt(body, format_args!(r#"{{"role":"{role}","content":"{content}"}}"#));
 }
 
 fn emit_member(body: &mut String, first: &mut bool, member: &str) {

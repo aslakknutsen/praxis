@@ -21,9 +21,7 @@ pub mod on_invalid;
 pub const MAX_DYNAMIC_VALUE_LEN: usize = 256;
 
 pub use compression::CompressionFilter;
-pub use json_body::JsonBodyFilter;
-#[cfg(feature = "bench-internals")]
-pub use json_body::bench;
+pub use json_body::{JsonBodyFilter, JsonBodyOps};
 pub use json_body_field::JsonBodyFieldFilter;
 pub use json_rpc::JsonRpcFilter;
 pub use on_invalid::OnInvalidBehavior;

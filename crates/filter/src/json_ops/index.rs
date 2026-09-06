@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use super::config::{CompiledOp, OpKind};
+use super::ops::{CompiledOp, OpKind};
 
 // -----------------------------------------------------------------------------
 // Path tokens

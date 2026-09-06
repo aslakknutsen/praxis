@@ -52,6 +52,7 @@ mod extensions;
 mod factory;
 mod filter;
 mod filtered_subrequest;
+pub mod json_ops;
 pub(crate) mod load_balancing;
 mod metrics;
 pub(crate) mod path_match;

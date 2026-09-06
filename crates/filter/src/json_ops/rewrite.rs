@@ -14,15 +14,12 @@ use bytes::Bytes;
 use smallvec::SmallVec;
 
 use super::{
-    config::{CompiledOp, CompiledOpSet, ValueSource},
+    error::JsonError,
     index::{PathToken, path_eq_tokens},
+    ops::{CompiledOp, CompiledOpSet, ExtractDest, OpKind, ValueSource},
     skip::{bump_depth, expect_byte, next_byte, skip_bom, skip_string_with_meta, skip_value, skip_ws},
+    store::JsonOpStore,
 };
-pub(crate) use super::{
-    config::{ExtractDest, OpKind},
-    error::RewriteError,
-};
-use crate::HttpFilterContext;
 
 /// Extra bytes reserved beyond input length and the compile-time growth hint.
 const OUTPUT_GROWTH_SLACK: usize = 64;
@@ -84,14 +81,14 @@ impl RewriteSession {
         }
     }
 
-    /// Write scratch captures into the request context.
-    fn flush_to_ctx(&self, ctx: &mut HttpFilterContext<'_>) {
+    /// Write scratch captures into the op store.
+    fn flush_to_store(&self, store: &mut dyn JsonOpStore) {
         for (key, text) in &self.scratch_metadata {
-            ctx.set_metadata(key.clone(), text.clone());
+            store.set_metadata(key.clone(), text.clone());
         }
         for ((namespace, key), bytes) in &self.capture_structured {
             if let Ok(value) = serde_json::from_slice(bytes) {
-                ctx.set_structured_metadata(namespace, key, value);
+                store.set_structured(namespace, key, value);
             }
         }
     }
@@ -119,22 +116,22 @@ pub(super) fn rewrite_output_capacity(input_len: usize, growth_hint: usize) -> u
 ///
 /// # Errors
 ///
-/// Returns [`RewriteError`] when the input is not valid JSON before the walk
+/// Returns [`JsonError`] when the input is not valid JSON before the walk
 /// completes or nesting exceeds [`super::error::MAX_JSON_DEPTH`].
 pub(super) fn rewrite_document(
     input: &[u8],
     op_set: &CompiledOpSet,
-    ctx: Option<&mut HttpFilterContext<'_>>,
-) -> Result<RewriteOutcome, RewriteError> {
+    store: Option<&mut dyn JsonOpStore>,
+) -> Result<RewriteOutcome, JsonError> {
     let mut session = RewriteSession::new(op_set);
-    if let Some(ctx) = ctx.as_deref() {
-        preload_context_sources(op_set, ctx, &mut session);
+    if let Some(store) = store.as_deref() {
+        preload_context_sources(op_set, store, &mut session);
     }
 
     let mut i = skip_bom(input);
     skip_ws(input, &mut i);
     if i >= input.len() {
-        return Err(RewriteError::InvalidJson);
+        return Err(JsonError::InvalidJson);
     }
 
     let emit = !op_set.extract_only;
@@ -142,9 +139,9 @@ pub(super) fn rewrite_document(
         skip_value(input, &mut i, 0)?;
         skip_ws(input, &mut i);
         if i != input.len() {
-            return Err(RewriteError::InvalidJson);
+            return Err(JsonError::InvalidJson);
         }
-        return Ok(finish_document(&session, ctx, emit.then(|| root.to_vec())));
+        return Ok(finish_document(&session, store, emit.then(|| root.to_vec())));
     }
 
     let mut out = emit.then(|| Vec::with_capacity(rewrite_output_capacity(input.len(), op_set.growth_hint)));
@@ -153,30 +150,28 @@ pub(super) fn rewrite_document(
     if emit {
         skip_ws(input, &mut i);
         if i != input.len() {
-            return Err(RewriteError::InvalidJson);
+            return Err(JsonError::InvalidJson);
         }
     }
 
-    Ok(finish_document(&session, ctx, out))
+    Ok(finish_document(&session, store, out))
 }
 
 /// Flush captures and wrap the optional output buffer.
 fn finish_document(
     session: &RewriteSession,
-    ctx: Option<&mut HttpFilterContext<'_>>,
+    store: Option<&mut dyn JsonOpStore>,
     output: Option<Vec<u8>>,
 ) -> RewriteOutcome {
-    if let Some(ctx) = ctx {
-        session.flush_to_ctx(ctx);
+    if let Some(store) = store {
+        session.flush_to_store(store);
     }
     RewriteOutcome { output }
 }
 
 /// Rewrite `input` using pre-resolved ops (unit tests).
 #[cfg(test)]
-pub(super) fn rewrite(input: &[u8], ops: &[ResolvedOp]) -> Result<Vec<u8>, RewriteError> {
-    use super::index::OpPathIndex;
-
+pub(super) fn rewrite(input: &[u8], ops: &[ResolvedOp]) -> Result<Vec<u8>, JsonError> {
     let compiled = ops
         .iter()
         .map(|op| {
@@ -191,15 +186,7 @@ pub(super) fn rewrite(input: &[u8], ops: &[ResolvedOp]) -> Result<Vec<u8>, Rewri
             }
         })
         .collect::<Vec<_>>();
-    let growth_hint = compiled.iter().map(super::config::op_growth_bytes).sum();
-    let index = OpPathIndex::build(&compiled);
-    let extract_only = super::config::ops_are_extract_only(&compiled);
-    let op_set = CompiledOpSet {
-        ops: compiled,
-        index,
-        growth_hint,
-        extract_only,
-    };
+    let op_set = CompiledOpSet::finalize(compiled);
     rewrite_document(input, &op_set, None).map(|outcome| outcome.output.unwrap_or_default())
 }
 
@@ -257,7 +244,7 @@ fn capture_value_at_path(
     depth: u32,
     op_set: &CompiledOpSet,
     session: &mut RewriteSession,
-) -> Result<(), RewriteError> {
+) -> Result<(), JsonError> {
     let start = *i;
     skip_value(input, i, depth)?;
     store_capture(input, start, *i, op_set, session);
@@ -265,31 +252,31 @@ fn capture_value_at_path(
 }
 
 /// Copy one JSON value as a raw span (no per-member tokenize of its interior).
-fn copy_span(input: &[u8], i: &mut usize, depth: u32, out: Option<&mut Vec<u8>>) -> Result<(), RewriteError> {
+fn copy_span(input: &[u8], i: &mut usize, depth: u32, out: Option<&mut Vec<u8>>) -> Result<(), JsonError> {
     skip_ws(input, i);
     let start = *i;
     skip_value(input, i, depth)?;
     if let Some(out) = out {
-        let span = input.get(start..*i).ok_or(RewriteError::InvalidJson)?;
+        let span = input.get(start..*i).ok_or(JsonError::InvalidJson)?;
         out.extend_from_slice(span);
     }
     Ok(())
 }
 
 /// Copy context metadata/structured values into scratch before the walk.
-fn preload_context_sources(op_set: &CompiledOpSet, ctx: &HttpFilterContext<'_>, session: &mut RewriteSession) {
+fn preload_context_sources(op_set: &CompiledOpSet, store: &dyn JsonOpStore, session: &mut RewriteSession) {
     for op in &op_set.ops {
         if op.kind == OpKind::Extract {
             continue;
         }
         match &op.source {
             Some(ValueSource::Metadata(key)) => {
-                if let Some(text) = ctx.get_metadata(key) {
+                if let Some(text) = store.get_metadata(key) {
                     session.scratch_metadata.insert(key.clone(), text.to_owned());
                 }
             },
             Some(ValueSource::Structured { namespace, key }) => {
-                if let Some(value) = ctx.get_structured_metadata(namespace, key) {
+                if let Some(value) = store.get_structured(namespace, key) {
                     session
                         .scratch_structured
                         .insert((namespace.clone(), key.clone()), value.clone());
@@ -393,7 +380,7 @@ fn rewrite_value(
     mut out: Option<&mut Vec<u8>>,
     depth: u32,
     session: &mut RewriteSession,
-) -> Result<(), RewriteError> {
+) -> Result<(), JsonError> {
     skip_ws(input, i);
     if !op_set.index.has_descendant_ops(&session.path) {
         let start = *i;
@@ -430,7 +417,7 @@ fn rewrite_object(
     mut out: Option<&mut Vec<u8>>,
     depth: u32,
     session: &mut RewriteSession,
-) -> Result<(), RewriteError> {
+) -> Result<(), JsonError> {
     let depth = bump_depth(depth)?;
     expect_byte(input, i, b'{')?;
     if let Some(out) = out.as_mut() {
@@ -451,7 +438,7 @@ fn rewrite_object(
             expect_byte(input, i, b',')?;
             skip_ws(input, i);
             if next_byte(input, *i)? == b'}' {
-                return Err(RewriteError::InvalidJson);
+                return Err(JsonError::InvalidJson);
             }
         }
         seen_input_member = true;
@@ -523,7 +510,7 @@ fn apply_object_mutate(
     depth: u32,
     op_set: &CompiledOpSet,
     session: &mut RewriteSession,
-) -> Result<(), RewriteError> {
+) -> Result<(), JsonError> {
     match op.kind {
         OpKind::Remove => capture_value_at_path(input, i, depth, op_set, session),
         OpKind::Replace | OpKind::Add => {
@@ -596,7 +583,7 @@ fn rewrite_array(
     mut out: Option<&mut Vec<u8>>,
     depth: u32,
     session: &mut RewriteSession,
-) -> Result<(), RewriteError> {
+) -> Result<(), JsonError> {
     let depth = bump_depth(depth)?;
     expect_byte(input, i, b'[')?;
     if let Some(out) = out.as_mut() {
@@ -616,7 +603,7 @@ fn rewrite_array(
             expect_byte(input, i, b',')?;
             skip_ws(input, i);
             if next_byte(input, *i)? == b']' {
-                return Err(RewriteError::InvalidJson);
+                return Err(JsonError::InvalidJson);
             }
         }
 
@@ -682,7 +669,7 @@ fn rewrite_array_member(
     emitted_any: &mut bool,
     depth: u32,
     session: &mut RewriteSession,
-) -> Result<(), RewriteError> {
+) -> Result<(), JsonError> {
     let Some(op) = op_at(&op_set.ops, op_idx) else {
         return Ok(());
     };
@@ -737,7 +724,7 @@ fn emit_original_member(
     key_span: &[u8],
     out: &mut Vec<u8>,
     emitted_any: &mut bool,
-) -> Result<(), RewriteError> {
+) -> Result<(), JsonError> {
     emit_separator(out, emitted_any);
     out.extend_from_slice(key_span);
     out.push(b':');
@@ -745,25 +732,23 @@ fn emit_original_member(
 }
 
 /// Copy `input[start..end]` into `out`.
-fn copy_input_span(input: &[u8], start: usize, end: usize, out: &mut Vec<u8>) -> Result<(), RewriteError> {
-    let span = input.get(start..end).ok_or(RewriteError::InvalidJson)?;
+fn copy_input_span(input: &[u8], start: usize, end: usize, out: &mut Vec<u8>) -> Result<(), JsonError> {
+    let span = input.get(start..end).ok_or(JsonError::InvalidJson)?;
     out.extend_from_slice(span);
     Ok(())
 }
 
 /// Parse a JSON string; returns the original quoted span and the decoded text.
-fn parse_string<'a>(input: &'a [u8], i: &mut usize) -> Result<(&'a [u8], Cow<'a, str>), RewriteError> {
+fn parse_string<'a>(input: &'a [u8], i: &mut usize) -> Result<(&'a [u8], Cow<'a, str>), JsonError> {
     let start = *i;
     let escaped = skip_string_with_meta(input, i)?;
-    let raw = input.get(start..*i).ok_or(RewriteError::InvalidJson)?;
-    let inner = raw
-        .get(1..raw.len().saturating_sub(1))
-        .ok_or(RewriteError::InvalidJson)?;
+    let raw = input.get(start..*i).ok_or(JsonError::InvalidJson)?;
+    let inner = raw.get(1..raw.len().saturating_sub(1)).ok_or(JsonError::InvalidJson)?;
     if escaped {
-        let decoded = serde_json::from_slice(raw).map_err(|_e| RewriteError::InvalidJson)?;
+        let decoded = serde_json::from_slice(raw).map_err(|_e| JsonError::InvalidJson)?;
         Ok((raw, Cow::Owned(decoded)))
     } else {
-        let decoded = std::str::from_utf8(inner).map_err(|_e| RewriteError::InvalidJson)?;
+        let decoded = std::str::from_utf8(inner).map_err(|_e| JsonError::InvalidJson)?;
         Ok((raw, Cow::Borrowed(decoded)))
     }
 }

@@ -3,18 +3,13 @@
 
 //! YAML configuration for the JSON body pointer filter.
 
-use bytes::Bytes;
 use serde::Deserialize;
 
-use super::{
-    index::OpPathIndex,
-    pointer::{compile_pointer, pointers_overlap},
-    skip::encode_json_string,
-};
 use crate::{
     FilterError,
     body::DEFAULT_JSON_BODY_MAX_BYTES,
     builtins::http::payload_processing::{OnInvalidBehavior, config_validation::validate_max_body_bytes},
+    json_ops::{ExtractDest, JsonError, JsonOps, JsonValue},
 };
 
 // -----------------------------------------------------------------------------
@@ -129,108 +124,15 @@ fn default_max_body_bytes() -> usize {
     DEFAULT_JSON_BODY_MAX_BYTES
 }
 
-// -----------------------------------------------------------------------------
-// Operation kinds
-// -----------------------------------------------------------------------------
-
-/// Kind of pointer operation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum OpKind {
-    /// Insert last token (overwrite existing object keys; insert/append on arrays).
-    Add,
-    /// Overwrite if the pointer exists; skip if missing.
-    Replace,
-    /// Omit if present; skip if missing.
-    Remove,
-    /// Copy the pointer's JSON into context; body is unchanged.
-    Extract,
-}
-
-impl OpKind {
-    /// Whether this op mutates the serialized body.
-    pub(super) const fn is_mutating(self) -> bool {
-        matches!(self, Self::Add | Self::Replace | Self::Remove)
-    }
-}
-
-/// Where an extracted JSON span is written.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum ExtractDest {
-    /// `filter_metadata` key.
-    Metadata(String),
-    /// Structured-metadata namespace and key.
-    Structured {
-        /// Structured-metadata namespace.
-        namespace: String,
-        /// Field within the namespace object.
-        key: String,
-    },
-}
-
-// -----------------------------------------------------------------------------
-// Compiled ops
-// -----------------------------------------------------------------------------
-
-/// Where an add/replace value comes from at rewrite time.
-#[derive(Clone, Debug)]
-pub(super) enum ValueSource {
-    /// Pre-serialized JSON bytes from a static YAML value.
-    Static(Bytes),
-    /// `filter_metadata` key.
-    Metadata(String),
-    /// Structured metadata namespace and key.
-    Structured {
-        /// Structured-metadata namespace.
-        namespace: String,
-        /// Field within the namespace object.
-        key: String,
-    },
-}
-
-/// One compiled pointer operation.
-#[derive(Clone, Debug)]
-pub(super) struct CompiledOp {
-    /// Original pointer string, for logs and overlap errors.
-    pub pointer: String,
-    /// Decoded RFC 6901 tokens (empty = document root).
-    pub tokens: Vec<String>,
-    /// Operation kind.
-    pub kind: OpKind,
-    /// Value to inject; `None` for remove and extract. Static YAML values are
-    /// `ValueSource::Static` (pre-serialized JSON bytes).
-    pub source: Option<ValueSource>,
-    /// Extract destination; `None` unless [`OpKind::Extract`].
-    pub dest: Option<ExtractDest>,
-    /// JSON-quoted last pointer token for object keys (`"tenant"`).
-    pub encoded_last_token: Option<Bytes>,
-}
-
-/// Compiled operations plus lookup index for one direction.
-#[derive(Clone, Debug)]
-pub(super) struct CompiledOpSet {
-    /// Operations in config order (extract, add, replace, remove).
-    pub ops: Vec<CompiledOp>,
-    /// Trie index for pointer lookups.
-    pub index: OpPathIndex,
-    /// Sum of static payload and encoded key sizes for output capacity.
-    pub growth_hint: usize,
-    /// True when every op is extract (no body rewrite, skip trailing-byte check).
-    pub extract_only: bool,
-}
-
 /// Request-side and response-side compiled operations.
 pub(super) struct CompiledOps {
     /// Request-body operations.
-    pub request: CompiledOpSet,
+    pub request: JsonOps,
     /// Response-body operations.
-    pub response: CompiledOpSet,
+    pub response: JsonOps,
 }
 
-// -----------------------------------------------------------------------------
-// Build
-// -----------------------------------------------------------------------------
-
-/// Validate config and compile pointers.
+/// Validate config and compile pointers through [`JsonOpsBuilder`].
 ///
 /// # Errors
 ///
@@ -262,47 +164,11 @@ pub(super) fn build_ops(cfg: JsonBodyConfig) -> Result<(usize, OnInvalidBehavior
         cfg.response_extract,
     )?;
 
-    if request.ops.is_empty() && response.ops.is_empty() {
+    if request.is_empty() && response.is_empty() {
         return Err("json_body: at least one add, remove, replace, or extract operation is required".into());
     }
 
     Ok((cfg.max_body_bytes, cfg.on_invalid, CompiledOps { request, response }))
-}
-
-/// Wrap compiled ops with trie index and growth hint.
-fn finalize_op_set(ops: Vec<CompiledOp>) -> CompiledOpSet {
-    let growth_hint = ops.iter().map(op_growth_bytes).sum();
-    let index = OpPathIndex::build(&ops);
-    let extract_only = ops_are_extract_only(&ops);
-    CompiledOpSet {
-        ops,
-        index,
-        growth_hint,
-        extract_only,
-    }
-}
-
-/// Whether every op is extract (empty sets are not extract-only).
-pub(super) fn ops_are_extract_only(ops: &[CompiledOp]) -> bool {
-    !ops.is_empty() && ops.iter().all(|op| op.kind == OpKind::Extract)
-}
-
-/// Bytes contributed by one op to rewritten output size.
-pub(super) fn op_growth_bytes(op: &CompiledOp) -> usize {
-    let payload = match &op.source {
-        Some(ValueSource::Static(bytes)) => bytes.len(),
-        Some(ValueSource::Metadata(_) | ValueSource::Structured { .. }) | None => 0,
-    };
-    let key = op.encoded_last_token.as_ref().map_or(0, Bytes::len);
-    match op.kind {
-        OpKind::Add | OpKind::Replace => payload.saturating_add(key),
-        OpKind::Remove | OpKind::Extract => 0,
-    }
-}
-
-/// JSON-quoted last pointer token, used when injecting a missing object member.
-fn encoded_last_object_token(tokens: &[String]) -> Option<Bytes> {
-    tokens.last().map(|last| encode_json_string(last))
 }
 
 /// Compile one direction's extract/add/replace/remove lists.
@@ -312,95 +178,39 @@ fn compile_direction(
     replace: Vec<PointerOpConfig>,
     remove: Vec<String>,
     extract: Vec<ExtractOpConfig>,
-) -> Result<CompiledOpSet, FilterError> {
-    let mut ops = Vec::with_capacity(extract.len() + add.len() + replace.len() + remove.len());
+) -> Result<JsonOps, FilterError> {
+    let mut builder = JsonOps::builder();
     for cfg in extract {
-        ops.push(compile_extract_op(direction, cfg)?);
+        builder = builder
+            .extract(&cfg.pointer, extract_dest(direction, &cfg)?)
+            .map_err(|e| json_err(&e))?;
     }
     for cfg in add {
-        ops.push(compile_valued_op(direction, "add", OpKind::Add, cfg)?);
+        builder = builder
+            .add(&cfg.pointer, value_source(direction, "add", &cfg)?)
+            .map_err(|e| json_err(&e))?;
     }
     for cfg in replace {
-        ops.push(compile_valued_op(direction, "replace", OpKind::Replace, cfg)?);
+        builder = builder
+            .replace(&cfg.pointer, value_source(direction, "replace", &cfg)?)
+            .map_err(|e| json_err(&e))?;
     }
     for pointer in remove {
-        ops.push(compile_remove_op(direction, pointer)?);
+        builder = builder.remove(pointer).map_err(|e| json_err(&e))?;
     }
-    reject_overlaps(direction, &ops)?;
-    Ok(finalize_op_set(ops))
+    builder.build().map_err(|e| json_err(&e))
 }
 
-/// Compile an add or replace entry.
-fn compile_valued_op(
-    direction: &str,
-    section: &str,
-    kind: OpKind,
-    cfg: PointerOpConfig,
-) -> Result<CompiledOp, FilterError> {
-    let tokens = compile_pointer(&cfg.pointer)?;
-    if tokens.is_empty() && kind == OpKind::Add {
-        return Err(format!("json_body: {direction}_{section} cannot target the document root (pointer \"\")").into());
-    }
-    let source = value_source(direction, section, &cfg)?;
-    let encoded_last_token = encoded_last_object_token(&tokens);
-    Ok(CompiledOp {
-        pointer: cfg.pointer,
-        tokens,
-        kind,
-        source: Some(source),
-        dest: None,
-        encoded_last_token,
-    })
-}
-
-/// Compile a remove pointer.
-fn compile_remove_op(direction: &str, pointer: String) -> Result<CompiledOp, FilterError> {
-    let tokens = compile_pointer(&pointer)?;
-    if tokens.is_empty() {
-        return Err(format!("json_body: {direction}_remove cannot target the document root (pointer \"\")").into());
-    }
-    let encoded_last_token = encoded_last_object_token(&tokens);
-    Ok(CompiledOp {
-        pointer,
-        tokens,
-        kind: OpKind::Remove,
-        source: None,
-        dest: None,
-        encoded_last_token,
-    })
-}
-
-/// Compile an extract entry.
-fn compile_extract_op(direction: &str, cfg: ExtractOpConfig) -> Result<CompiledOp, FilterError> {
-    let tokens = compile_pointer(&cfg.pointer)?;
-    let dest = extract_dest(direction, &cfg)?;
-    Ok(CompiledOp {
-        pointer: cfg.pointer,
-        tokens,
-        kind: OpKind::Extract,
-        source: None,
-        dest: Some(dest),
-        encoded_last_token: None,
-    })
+/// Map engine errors onto the filter's `json_body:` prefix.
+fn json_err(err: &JsonError) -> FilterError {
+    format!("json_body: {err}").into()
 }
 
 /// Require exactly one of `metadata` or `structured_metadata`.
 fn extract_dest(direction: &str, cfg: &ExtractOpConfig) -> Result<ExtractDest, FilterError> {
     match (&cfg.metadata, &cfg.structured_metadata) {
-        (Some(key), None) => {
-            if key.is_empty() {
-                return Err(format!("json_body: {direction}_extract 'metadata' must not be empty").into());
-            }
-            Ok(ExtractDest::Metadata(key.clone()))
-        },
-        (None, Some(meta)) if !meta.namespace.is_empty() && !meta.key.is_empty() => Ok(ExtractDest::Structured {
-            namespace: meta.namespace.clone(),
-            key: meta.key.clone(),
-        }),
-        (None, Some(_)) => Err(format!(
-            "json_body: {direction}_extract structured_metadata namespace and key must not be empty"
-        )
-        .into()),
+        (Some(key), None) => Ok(ExtractDest::metadata(key.clone())),
+        (None, Some(meta)) => Ok(ExtractDest::structured(meta.namespace.clone(), meta.key.clone())),
         (None, None) | (Some(_), Some(_)) => Err(format!(
             "json_body: {direction}_extract pointer '{}' must set exactly one of \
              'metadata' or 'structured_metadata'",
@@ -411,8 +221,7 @@ fn extract_dest(direction: &str, cfg: &ExtractOpConfig) -> Result<ExtractDest, F
 }
 
 /// Require exactly one of `value`, `metadata`, `structured_metadata`.
-#[expect(clippy::too_many_lines, reason = "one-of validation is a linear match")]
-fn value_source(direction: &str, section: &str, cfg: &PointerOpConfig) -> Result<ValueSource, FilterError> {
+fn value_source(direction: &str, section: &str, cfg: &PointerOpConfig) -> Result<JsonValue, FilterError> {
     let n = usize::from(cfg.value.is_some())
         + usize::from(cfg.metadata.is_some())
         + usize::from(cfg.structured_metadata.is_some());
@@ -424,58 +233,19 @@ fn value_source(direction: &str, section: &str, cfg: &PointerOpConfig) -> Result
         )
         .into());
     }
-    if let Some(value) = &cfg.value {
-        let bytes = serde_json::to_vec(value)
-            .map_err(|e| -> FilterError { format!("json_body: failed to serialize static value: {e}").into() })?;
-        return Ok(ValueSource::Static(Bytes::from(bytes)));
+    if let Some(value) = cfg.value.clone() {
+        return JsonValue::static_json(value).map_err(|e| json_err(&e));
     }
     if let Some(key) = &cfg.metadata {
-        if key.is_empty() {
-            return Err(format!("json_body: {direction}_{section} 'metadata' must not be empty").into());
-        }
-        return Ok(ValueSource::Metadata(key.clone()));
+        return Ok(JsonValue::metadata(key.clone()));
     }
     match &cfg.structured_metadata {
-        Some(meta) if !meta.namespace.is_empty() && !meta.key.is_empty() => Ok(ValueSource::Structured {
-            namespace: meta.namespace.clone(),
-            key: meta.key.clone(),
-        }),
-        Some(_) => Err(format!(
-            "json_body: {direction}_{section} structured_metadata namespace and key must not be empty"
-        )
-        .into()),
+        Some(meta) => Ok(JsonValue::structured(meta.namespace.clone(), meta.key.clone())),
         None => Err(format!(
             "json_body: {direction}_{section} pointer '{}' must set exactly one of \
              'value', 'metadata', or 'structured_metadata'",
             cfg.pointer
         )
         .into()),
-    }
-}
-
-/// Reject overlapping mutating pointers; reject equal extract pointers.
-fn reject_overlaps(direction: &str, ops: &[CompiledOp]) -> Result<(), FilterError> {
-    for (i, a) in ops.iter().enumerate() {
-        for b in ops.iter().skip(i + 1) {
-            if overlapping_ops(a, b) {
-                return Err(format!(
-                    "json_body: overlapping JSON Pointers in {direction}: '{}' and '{}'",
-                    a.pointer, b.pointer
-                )
-                .into());
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Whether two compiled ops conflict under the overlap rules.
-fn overlapping_ops(a: &CompiledOp, b: &CompiledOp) -> bool {
-    let a_mut = a.kind.is_mutating();
-    let b_mut = b.kind.is_mutating();
-    match (a_mut, b_mut) {
-        (true, true) => pointers_overlap(&a.tokens, &b.tokens),
-        (false, false) => a.tokens == b.tokens,
-        _ => false,
     }
 }

@@ -3,7 +3,7 @@
 
 //! RFC 6901 JSON Pointer compilation and overlap checks.
 
-use crate::FilterError;
+use super::JsonError;
 
 // -----------------------------------------------------------------------------
 // Pointer compilation
@@ -17,21 +17,23 @@ use crate::FilterError;
 ///
 /// # Errors
 ///
-/// Returns [`FilterError`] when the pointer does not start with `/`
+/// Returns [`JsonError::Compile`] when the pointer does not start with `/`
 /// (unless it is empty) or contains an invalid `~` escape.
-pub(super) fn compile_pointer(raw: &str) -> Result<Vec<String>, FilterError> {
+pub(super) fn compile_pointer(raw: &str) -> Result<Vec<String>, JsonError> {
     if raw.is_empty() {
         return Ok(Vec::new());
     }
     let Some(rest) = raw.strip_prefix('/') else {
-        return Err(format!("json_body: JSON Pointer '{raw}' must be empty or start with '/'").into());
+        return Err(JsonError::compile(format!(
+            "JSON Pointer '{raw}' must be empty or start with '/'"
+        )));
     };
 
     rest.split('/').map(unescape_token).collect::<Result<Vec<_>, _>>()
 }
 
 /// Unescape one JSON Pointer token.
-fn unescape_token(token: &str) -> Result<String, FilterError> {
+fn unescape_token(token: &str) -> Result<String, JsonError> {
     let mut out = String::with_capacity(token.len());
     let mut chars = token.chars();
     while let Some(ch) = chars.next() {
@@ -43,9 +45,9 @@ fn unescape_token(token: &str) -> Result<String, FilterError> {
             Some('0') => out.push('~'),
             Some('1') => out.push('/'),
             Some(other) => {
-                return Err(format!("json_body: invalid JSON Pointer escape '~{other}'").into());
+                return Err(JsonError::compile(format!("invalid JSON Pointer escape '~{other}'")));
             },
-            None => return Err("json_body: truncated JSON Pointer escape".into()),
+            None => return Err(JsonError::compile("truncated JSON Pointer escape")),
         }
     }
     Ok(out)
