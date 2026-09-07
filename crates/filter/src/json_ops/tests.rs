@@ -353,3 +353,15 @@ fn env_var_missing_fails_at_build() {
     let err = JsonValue::env_var("PRAXIS_JSON_OPS_ENV_DEFINITELY_MISSING").unwrap_err();
     assert!(err.to_string().contains("not set"), "got: {err}");
 }
+
+#[test]
+fn extract_to_request_header() {
+    let ops = JsonOps::builder()
+        .extract("/model", ExtractDest::header("X-Model"))
+        .unwrap()
+        .build()
+        .unwrap();
+    let mut store = MapStore::new();
+    ops.apply(br#"{"model":"gpt-4"}"#, Some(&mut store)).unwrap();
+    assert_eq!(store.request_headers(), &[("X-Model".to_owned(), "gpt-4".to_owned())]);
+}
