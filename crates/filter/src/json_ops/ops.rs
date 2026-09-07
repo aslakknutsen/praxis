@@ -39,6 +39,10 @@ pub enum ExtractDest {
         /// Field within the namespace object.
         key: String,
     },
+    /// Request header promoted via [`HttpFilterContext::extra_request_headers`].
+    ///
+    /// [`HttpFilterContext::extra_request_headers`]: crate::HttpFilterContext::extra_request_headers
+    Header(String),
 }
 
 impl ExtractDest {
@@ -55,6 +59,12 @@ impl ExtractDest {
             namespace: namespace.into(),
             key: key.into(),
         }
+    }
+
+    /// Promote the captured JSON as a request header value.
+    #[must_use]
+    pub fn header(name: impl Into<String>) -> Self {
+        Self::Header(name.into())
     }
 }
 

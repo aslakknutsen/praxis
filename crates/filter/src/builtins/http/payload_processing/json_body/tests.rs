@@ -450,6 +450,68 @@ fn extract_plus_replace_is_read_write() {
 }
 
 #[tokio::test]
+async fn extract_string_to_header() {
+    let filter = parse_filter(
+        r#"
+        request_extract:
+          - pointer: /model
+            header: X-Model
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body = Some(Bytes::from_static(br#"{"model":"old","n":1}"#));
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(matches!(action, FilterAction::BodyDone));
+    assert_eq!(ctx.extra_request_headers.len(), 1);
+    assert_eq!(ctx.extra_request_headers[0].0, "X-Model");
+    assert_eq!(ctx.extra_request_headers[0].1, "old");
+    assert_eq!(body.as_ref().unwrap().as_ref(), br#"{"model":"old","n":1}"#);
+}
+
+#[tokio::test]
+async fn extract_object_to_header_uses_raw_json() {
+    let filter = parse_filter(
+        r#"
+        request_extract:
+          - pointer: /user
+            header: X-User
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body = Some(Bytes::from_static(br#"{"user":{"id":1}}"#));
+    let _ = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert_eq!(ctx.extra_request_headers.len(), 1);
+    assert_eq!(ctx.extra_request_headers[0].1, r#"{"id":1}"#);
+}
+
+#[test]
+fn rejects_response_extract_header() {
+    let err = parse_err(
+        r#"
+        response_extract:
+          - pointer: /model
+            header: X-Model
+        "#,
+    );
+    assert!(err.contains("cannot use 'header'"), "got: {err}");
+}
+
+#[test]
+fn rejects_extract_with_multiple_dests() {
+    let err = parse_err(
+        r#"
+        request_extract:
+          - pointer: /model
+            metadata: original.model
+            header: X-Model
+        "#,
+    );
+    assert!(err.contains("exactly one"), "got: {err}");
+}
+
+#[tokio::test]
 async fn extract_string_to_metadata() {
     let filter = parse_filter(
         r#"
