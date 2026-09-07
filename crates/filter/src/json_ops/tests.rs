@@ -347,3 +347,9 @@ fn builder_static_replace() {
     let out = ops.apply(br#"{"model":"old"}"#, None).unwrap().output.unwrap();
     assert_eq!(out, br#"{"model":"forced"}"#);
 }
+
+#[test]
+fn env_var_missing_fails_at_build() {
+    let err = JsonValue::env_var("PRAXIS_JSON_OPS_ENV_DEFINITELY_MISSING").unwrap_err();
+    assert!(err.to_string().contains("not set"), "got: {err}");
+}

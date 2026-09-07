@@ -104,6 +104,8 @@ impl Default for JsonBodyOps {
 /// request_add:
 ///   - pointer: /tenant
 ///     value: acme
+///   - pointer: /api_key
+///     env_var: TENANT_API_KEY
 ///   - pointer: /original_model
 ///     metadata: original.model
 /// request_remove:

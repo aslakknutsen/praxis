@@ -155,6 +155,31 @@ fn rejects_both_value_and_metadata() {
     );
 }
 
+#[test]
+fn rejects_both_value_and_env_var() {
+    let err = parse_err(
+        r#"
+        request_add:
+          - pointer: /a
+            value: 1
+            env_var: TENANT
+        "#,
+    );
+    assert!(err.contains("exactly one"), "got: {err}");
+}
+
+#[test]
+fn rejects_missing_env_var_at_config() {
+    let err = parse_err(
+        r#"
+        request_add:
+          - pointer: /tenant
+            env_var: PRAXIS_JSON_BODY_ENV_MISSING
+        "#,
+    );
+    assert!(err.contains("not set"), "got: {err}");
+}
+
 // -----------------------------------------------------------------------------
 // Tokenizer: objects
 // -----------------------------------------------------------------------------
