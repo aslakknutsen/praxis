@@ -53,6 +53,26 @@ impl JsonValue {
             },
         }
     }
+
+    /// Read an environment variable at construction time and inject its value.
+    ///
+    /// Valid JSON in the variable is injected as-is; otherwise the raw text is
+    /// injected as a JSON string (same effective semantics as YAML `value:` for
+    /// a plain scalar).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JsonError::Compile`] when `var` is empty, unset, or not
+    /// serializable.
+    pub fn env_var(var: impl Into<String>) -> Result<Self, JsonError> {
+        let var = var.into();
+        if var.is_empty() {
+            return Err(JsonError::compile("'env_var' must not be empty"));
+        }
+        Ok(Self {
+            source: ValueSource::Static(json_bytes_from_environment(&var)?),
+        })
+    }
 }
 
 /// Result of one document walk.
@@ -232,6 +252,31 @@ fn encoded_last_object_token(tokens: &[String]) -> Option<Bytes> {
     tokens.last().map(|last| encode_json_string(last))
 }
 
+/// Serialize environment text for injection as JSON bytes.
+fn json_bytes_from_env_text(raw: &str) -> Result<Bytes, JsonError> {
+    match serde_json::from_str::<serde_json::Value>(raw) {
+        Ok(value) => {
+            let bytes = serde_json::to_vec(&value).map_err(|e| {
+                JsonError::compile(format!("failed to serialize environment value as JSON: {e}"))
+            })?;
+            Ok(Bytes::from(bytes))
+        },
+        Err(_) => {
+            let bytes = serde_json::to_vec(raw).map_err(|e| {
+                JsonError::compile(format!("failed to serialize environment value as JSON string: {e}"))
+            })?;
+            Ok(Bytes::from(bytes))
+        },
+    }
+}
+
+/// Serialize an environment variable for injection as JSON bytes.
+fn json_bytes_from_environment(var: &str) -> Result<Bytes, JsonError> {
+    let raw =
+        std::env::var(var).map_err(|e| JsonError::compile(format!("environment variable '{var}' not set: {e}")))?;
+    json_bytes_from_env_text(&raw)
+}
+
 /// Reject empty metadata keys on extract destinations.
 fn validate_extract_dest(dest: &ExtractDest) -> Result<(), JsonError> {
     match dest {
@@ -277,5 +322,20 @@ fn overlapping_ops(a: &CompiledOp, b: &CompiledOp) -> bool {
         (true, true) => pointers_overlap(&a.tokens, &b.tokens),
         (false, false) => a.tokens == b.tokens,
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod env_text_tests {
+    use super::json_bytes_from_env_text;
+
+    #[test]
+    fn plain_string_becomes_json_string() {
+        assert_eq!(json_bytes_from_env_text("acme").unwrap().as_ref(), br#""acme""#);
+    }
+
+    #[test]
+    fn json_document_is_injected_as_is() {
+        assert_eq!(json_bytes_from_env_text(r#"{"k":1}"#).unwrap().as_ref(), br#"{"k":1}"#);
     }
 }
