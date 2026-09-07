@@ -69,9 +69,9 @@ pub(super) struct JsonBodyConfig {
     pub on_invalid: OnInvalidBehavior,
 }
 
-/// A pointer plus exactly one of `value`, `metadata`, or `structured_metadata`.
+/// A pointer plus exactly one of `value`, `metadata`, `structured_metadata`, or `env_var`.
 ///
-/// Three `Option` fields rather than a serde enum: the generated filter-docs
+/// Four `Option` fields rather than a serde enum: the generated filter-docs
 /// table needs named YAML keys, and `value_source` can say "exactly one of".
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -87,6 +87,11 @@ pub(super) struct PointerOpConfig {
 
     /// Namespaced structured metadata; injected as JSON as-is. Mutually exclusive with the other sources.
     pub structured_metadata: Option<StructuredMetadataRef>,
+
+    /// Environment variable read once at filter construction. Mutually exclusive
+    /// with the other sources. Valid JSON in the variable is injected as-is;
+    /// otherwise the raw text is injected as a JSON string.
+    pub env_var: Option<String>,
 }
 
 /// A pointer plus exactly one of `metadata` or `structured_metadata` as the extract destination.
@@ -220,15 +225,16 @@ fn extract_dest(direction: &str, cfg: &ExtractOpConfig) -> Result<ExtractDest, F
     }
 }
 
-/// Require exactly one of `value`, `metadata`, `structured_metadata`.
+/// Require exactly one of `value`, `metadata`, `structured_metadata`, or `env_var`.
 fn value_source(direction: &str, section: &str, cfg: &PointerOpConfig) -> Result<JsonValue, FilterError> {
     let n = usize::from(cfg.value.is_some())
         + usize::from(cfg.metadata.is_some())
-        + usize::from(cfg.structured_metadata.is_some());
+        + usize::from(cfg.structured_metadata.is_some())
+        + usize::from(cfg.env_var.is_some());
     if n != 1 {
         return Err(format!(
             "json_body: {direction}_{section} pointer '{}' must set exactly one of \
-             'value', 'metadata', or 'structured_metadata'",
+             'value', 'metadata', 'structured_metadata', or 'env_var'",
             cfg.pointer
         )
         .into());
@@ -239,11 +245,14 @@ fn value_source(direction: &str, section: &str, cfg: &PointerOpConfig) -> Result
     if let Some(key) = &cfg.metadata {
         return Ok(JsonValue::metadata(key.clone()));
     }
+    if let Some(var) = &cfg.env_var {
+        return JsonValue::env_var(var.clone()).map_err(|e| json_err(&e));
+    }
     match &cfg.structured_metadata {
         Some(meta) => Ok(JsonValue::structured(meta.namespace.clone(), meta.key.clone())),
         None => Err(format!(
             "json_body: {direction}_{section} pointer '{}' must set exactly one of \
-             'value', 'metadata', or 'structured_metadata'",
+             'value', 'metadata', 'structured_metadata', or 'env_var'",
             cfg.pointer
         )
         .into()),
