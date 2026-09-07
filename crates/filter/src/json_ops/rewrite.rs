@@ -20,6 +20,10 @@ use super::{
     skip::{bump_depth, expect_byte, next_byte, skip_bom, skip_string_with_meta, skip_value, skip_ws},
     store::JsonOpStore,
 };
+use crate::builtins::http::{
+    payload_processing::MAX_DYNAMIC_VALUE_LEN,
+    value_safety::contains_control_chars,
+};
 
 /// Extra bytes reserved beyond input length and the compile-time growth hint.
 const OUTPUT_GROWTH_SLACK: usize = 64;
@@ -55,6 +59,8 @@ struct RewriteSession {
     scratch_structured: HashMap<(String, String), serde_json::Value>,
     /// Raw JSON spans captured for structured metadata extract.
     capture_structured: HashMap<(String, String), Bytes>,
+    /// Header names and promoted text captured this walk.
+    capture_headers: HashMap<String, String>,
     /// Cached serialized payloads per op index (prefilled for `ValueSource::Static`).
     resolved: Vec<Option<Bytes>>,
     /// JSON Pointer tokens for the value currently being walked.
@@ -76,6 +82,7 @@ impl RewriteSession {
             scratch_metadata: HashMap::new(),
             scratch_structured: HashMap::new(),
             capture_structured: HashMap::new(),
+            capture_headers: HashMap::new(),
             resolved,
             path: SmallVec::new(),
         }
@@ -89,6 +96,11 @@ impl RewriteSession {
         for ((namespace, key), bytes) in &self.capture_structured {
             if let Ok(value) = serde_json::from_slice(bytes) {
                 store.set_structured(namespace, key, value);
+            }
+        }
+        for (name, text) in &self.capture_headers {
+            if is_safe_header_promotion(text, name) {
+                store.push_request_header(name.clone(), text.clone());
             }
         }
     }
@@ -203,6 +215,27 @@ fn metadata_text(json: &[u8]) -> Option<String> {
     }
 }
 
+/// Reject header promotions that exceed the length ceiling or contain controls.
+fn is_safe_header_promotion(text: &str, header: &str) -> bool {
+    if text.len() > MAX_DYNAMIC_VALUE_LEN {
+        tracing::warn!(
+            header = %header,
+            len = text.len(),
+            max = MAX_DYNAMIC_VALUE_LEN,
+            "skipping header promotion: value exceeds maximum length"
+        );
+        return false;
+    }
+    if contains_control_chars(text) {
+        tracing::warn!(
+            header = %header,
+            "skipping header promotion: value contains control characters"
+        );
+        return false;
+    }
+    true
+}
+
 /// Capture an extract at `session.path` from `input[start..end]`.
 ///
 /// Duplicate object keys: extract keeps the last match by overwriting.
@@ -233,6 +266,11 @@ fn write_capture_dest(json: &[u8], dest: &ExtractDest, session: &mut RewriteSess
             session
                 .capture_structured
                 .insert((namespace.clone(), key.clone()), Bytes::copy_from_slice(json));
+        },
+        ExtractDest::Header(name) => {
+            if let Some(text) = metadata_text(json) {
+                session.capture_headers.insert(name.clone(), text);
+            }
         },
     }
 }
