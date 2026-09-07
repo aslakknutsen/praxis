@@ -72,9 +72,11 @@ impl Default for JsonBodyOps {
 /// and extract.
 ///
 /// Applies mutating operations in one pass over a `StreamBuffer`-held body.
-/// Extract copies a pointer's JSON into `filter_metadata` or structured
-/// metadata without changing the body. `filter_metadata` values over 256
-/// bytes are dropped; use structured metadata for nested or larger values.
+/// Extract copies a pointer's JSON into `filter_metadata`, structured
+/// metadata, or a request header without changing the body.
+/// `filter_metadata` values over 256 bytes are dropped; use structured
+/// metadata for nested or larger values. Header promotion skips values over
+/// 256 bytes or containing control characters.
 /// Mutating pointers must not overlap (equal or prefix) within a direction.
 /// Duplicate extract pointers are rejected; nested extract pointers are allowed.
 /// Unused subtrees are copied as byte spans. Missing parents, missing
@@ -101,6 +103,8 @@ impl Default for JsonBodyOps {
 /// request_extract:
 ///   - pointer: /model
 ///     metadata: original.model
+///   - pointer: /model
+///     header: X-Model
 /// request_add:
 ///   - pointer: /tenant
 ///     value: acme

@@ -281,10 +281,11 @@ fn json_bytes_from_environment(var: &str) -> Result<Bytes, JsonError> {
 fn validate_extract_dest(dest: &ExtractDest) -> Result<(), JsonError> {
     match dest {
         ExtractDest::Metadata(key) if key.is_empty() => Err(JsonError::compile("extract 'metadata' must not be empty")),
+        ExtractDest::Header(name) if name.is_empty() => Err(JsonError::compile("extract 'header' must not be empty")),
         ExtractDest::Structured { namespace, key } if namespace.is_empty() || key.is_empty() => Err(
             JsonError::compile("extract structured_metadata namespace and key must not be empty"),
         ),
-        ExtractDest::Metadata(_) | ExtractDest::Structured { .. } => Ok(()),
+        ExtractDest::Metadata(_) | ExtractDest::Structured { .. } | ExtractDest::Header(_) => Ok(()),
     }
 }
 

@@ -20,6 +20,9 @@ pub trait JsonOpStore {
 
     /// Write structured metadata.
     fn set_structured(&mut self, namespace: &str, key: &str, value: serde_json::Value);
+
+    /// Promote a captured value to a request header.
+    fn push_request_header(&mut self, name: String, value: String);
 }
 
 /// In-memory store for tests, benches, and apply-on-bytes without a request.
@@ -29,6 +32,8 @@ pub struct MapStore {
     metadata: HashMap<String, String>,
     /// Structured values keyed by namespace then field.
     structured: HashMap<String, HashMap<String, serde_json::Value>>,
+    /// Promoted request headers for tests and benches.
+    request_headers: Vec<(String, String)>,
 }
 
 impl MapStore {
@@ -42,6 +47,12 @@ impl MapStore {
     #[must_use]
     pub fn metadata(&self) -> &HashMap<String, String> {
         &self.metadata
+    }
+
+    /// Borrow promoted request headers.
+    #[must_use]
+    pub fn request_headers(&self) -> &[(String, String)] {
+        &self.request_headers
     }
 }
 
@@ -64,6 +75,10 @@ impl JsonOpStore for MapStore {
             .or_default()
             .insert(key.to_owned(), value);
     }
+
+    fn push_request_header(&mut self, name: String, value: String) {
+        self.request_headers.push((name, value));
+    }
 }
 
 /// [`JsonOpStore`] adapter over [`HttpFilterContext`].
@@ -82,6 +97,8 @@ impl<'a, 'ctx> HttpJsonStore<'a, 'ctx> {
     }
 }
 
+use std::borrow::Cow;
+
 impl JsonOpStore for HttpJsonStore<'_, '_> {
     fn get_metadata(&self, key: &str) -> Option<&str> {
         self.ctx.get_metadata(key)
@@ -97,5 +114,9 @@ impl JsonOpStore for HttpJsonStore<'_, '_> {
 
     fn set_structured(&mut self, namespace: &str, key: &str, value: serde_json::Value) {
         self.ctx.set_structured_metadata(namespace, key, value);
+    }
+
+    fn push_request_header(&mut self, name: String, value: String) {
+        self.ctx.extra_request_headers.push((Cow::Owned(name), value));
     }
 }

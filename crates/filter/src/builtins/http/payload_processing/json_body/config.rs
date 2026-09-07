@@ -35,7 +35,8 @@ pub(super) struct JsonBodyConfig {
     /// Pointers whose JSON is copied into request-scoped context.
     ///
     /// `filter_metadata` values are capped at 256 bytes by the context.
-    /// Use `structured_metadata` for nested or larger values.
+    /// Use `structured_metadata` for nested or larger values. Use `header`
+    /// to promote into `extra_request_headers` (request extract only).
     #[serde(default)]
     pub request_extract: Vec<ExtractOpConfig>,
 
@@ -94,21 +95,27 @@ pub(super) struct PointerOpConfig {
     pub env_var: Option<String>,
 }
 
-/// A pointer plus exactly one of `metadata` or `structured_metadata` as the extract destination.
+/// A pointer plus exactly one of `metadata`, `structured_metadata`, or `header` as the extract destination.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ExtractOpConfig {
     /// JSON Pointer (RFC 6901) identifying the value to copy.
     pub pointer: String,
 
-    /// `filter_metadata` key to write. Mutually exclusive with `structured_metadata`.
+    /// `filter_metadata` key to write. Mutually exclusive with the other destinations.
     ///
     /// JSON strings are stored decoded; other values are stored as their source JSON
     /// text. Values over 256 bytes are dropped by the context.
     pub metadata: Option<String>,
 
-    /// Namespaced structured metadata to write. Mutually exclusive with `metadata`.
+    /// Namespaced structured metadata to write. Mutually exclusive with the other destinations.
     pub structured_metadata: Option<StructuredMetadataRef>,
+
+    /// Request header to promote the extracted value into. Mutually exclusive with
+    /// the other destinations. JSON strings are promoted decoded; other values use
+    /// their source JSON text. Values over 256 bytes or containing control
+    /// characters are skipped. Not supported on `response_extract`.
+    pub header: Option<String>,
 }
 
 /// Namespace + key addressing [`HttpFilterContext::get_structured_metadata`].
@@ -211,14 +218,45 @@ fn json_err(err: &JsonError) -> FilterError {
     format!("json_body: {err}").into()
 }
 
-/// Require exactly one of `metadata` or `structured_metadata`.
+/// Require exactly one of `metadata`, `structured_metadata`, or `header`.
 fn extract_dest(direction: &str, cfg: &ExtractOpConfig) -> Result<ExtractDest, FilterError> {
-    match (&cfg.metadata, &cfg.structured_metadata) {
-        (Some(key), None) => Ok(ExtractDest::metadata(key.clone())),
-        (None, Some(meta)) => Ok(ExtractDest::structured(meta.namespace.clone(), meta.key.clone())),
-        (None, None) | (Some(_), Some(_)) => Err(format!(
+    let n = usize::from(cfg.metadata.is_some())
+        + usize::from(cfg.structured_metadata.is_some())
+        + usize::from(cfg.header.is_some());
+    if n != 1 {
+        return Err(format!(
             "json_body: {direction}_extract pointer '{}' must set exactly one of \
-             'metadata' or 'structured_metadata'",
+             'metadata', 'structured_metadata', or 'header'",
+            cfg.pointer
+        )
+        .into());
+    }
+    if let Some(key) = &cfg.metadata {
+        return Ok(ExtractDest::metadata(key.clone()));
+    }
+    if let Some(header) = &cfg.header {
+        if direction == "response" {
+            return Err(format!(
+                "json_body: response_extract pointer '{}' cannot use 'header'; \
+                 use metadata or structured_metadata",
+                cfg.pointer
+            )
+            .into());
+        }
+        if header.is_empty() {
+            return Err(format!(
+                "json_body: {direction}_extract pointer '{}' 'header' must not be empty",
+                cfg.pointer
+            )
+            .into());
+        }
+        return Ok(ExtractDest::header(header.clone()));
+    }
+    match &cfg.structured_metadata {
+        Some(meta) => Ok(ExtractDest::structured(meta.namespace.clone(), meta.key.clone())),
+        None => Err(format!(
+            "json_body: {direction}_extract pointer '{}' must set exactly one of \
+             'metadata', 'structured_metadata', or 'header'",
             cfg.pointer
         )
         .into()),
