@@ -11,11 +11,10 @@
 //!
 //! Fixtures are OpenAI-style chat completion request bodies (`model`, `messages`, …).
 
-#![expect(
+#![allow(
+    clippy::as_conversions,
     clippy::min_ident_chars,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
+    clippy::missing_docs_in_private_items,
     reason = "benchmarks"
 )]
 
