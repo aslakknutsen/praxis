@@ -75,9 +75,10 @@ impl Default for JsonBodyOps {
 /// Extract copies a pointer's JSON into `filter_metadata`, structured
 /// metadata, or a request header without changing the body.
 /// `filter_metadata` values over 256 bytes are dropped; use structured
-/// metadata for nested or larger values. Header promotion skips values over
-/// 256 bytes or containing control characters, and skips when non-whitespace
-/// content follows the JSON value (metadata extract still runs).
+/// metadata for nested or larger values. Extract promotion requires a single JSON
+/// value with only trailing whitespace after the document; non-whitespace
+/// trailing content blocks all extract destinations. Header values over 256 bytes
+/// or containing control characters are also skipped.
 /// Mutating pointers must not overlap (equal or prefix) within a direction.
 /// Duplicate extract pointers are rejected; nested extract pointers are allowed.
 /// Unused subtrees are copied as byte spans. Missing parents, missing
