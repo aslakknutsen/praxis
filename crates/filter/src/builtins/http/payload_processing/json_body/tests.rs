@@ -547,7 +547,10 @@ async fn extract_header_skips_control_characters() {
     let mut body = Some(Bytes::from_static(br#"{"model":"bad\nvalue"}"#));
     let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
     assert!(matches!(action, FilterAction::BodyDone));
-    assert!(ctx.extra_request_headers.is_empty(), "control characters must not reach headers");
+    assert!(
+        ctx.extra_request_headers.is_empty(),
+        "control characters must not reach headers"
+    );
 }
 
 #[tokio::test]
@@ -564,7 +567,10 @@ async fn extract_header_trailing_junk_does_not_promote() {
     let mut body = Some(Bytes::from_static(br#"{"model":"premium"} garbage"#));
     let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
     assert!(matches!(action, FilterAction::Continue));
-    assert!(ctx.extra_request_headers.is_empty(), "no header from a body with trailing junk");
+    assert!(
+        ctx.extra_request_headers.is_empty(),
+        "no header from a body with trailing junk"
+    );
 }
 
 #[tokio::test]
