@@ -25,7 +25,7 @@ fn rewrite_str(input: &str, ops: &[ResolvedOp]) -> Result<String, JsonError> {
     rewrite(input.as_bytes(), ops).map(|b| String::from_utf8(b).unwrap())
 }
 
-use super::{ExtractDest, JsonOps, JsonOpStore, JsonValue, MapStore};
+use super::{ExtractDest, JsonOpStore as _, JsonOps, JsonValue, MapStore};
 
 #[test]
 fn replace_object_field() {
@@ -379,7 +379,10 @@ fn extract_header_skips_oversized_value() {
     let body = format!(r#"{{"model":"{long}"}}"#);
     let mut store = MapStore::new();
     ops.apply(body.as_bytes(), Some(&mut store)).unwrap();
-    assert!(store.request_headers().is_empty(), "oversized header values must be skipped");
+    assert!(
+        store.request_headers().is_empty(),
+        "oversized header values must be skipped"
+    );
 }
 
 #[test]
@@ -391,7 +394,10 @@ fn extract_header_skips_control_characters() {
         .unwrap();
     let mut store = MapStore::new();
     ops.apply(br#"{"model":"bad\nvalue"}"#, Some(&mut store)).unwrap();
-    assert!(store.request_headers().is_empty(), "control characters must not reach headers");
+    assert!(
+        store.request_headers().is_empty(),
+        "control characters must not reach headers"
+    );
 }
 
 #[test]
@@ -406,7 +412,10 @@ fn extract_header_skips_on_trailing_junk() {
         .apply(br#"{"model":"premium"} garbage"#, Some(&mut store))
         .unwrap_err();
     assert_eq!(err, JsonError::InvalidJson);
-    assert!(store.request_headers().is_empty(), "trailing junk must block header promotion");
+    assert!(
+        store.request_headers().is_empty(),
+        "trailing junk must block header promotion"
+    );
 }
 
 #[test]
@@ -417,9 +426,7 @@ fn extract_only_trailing_junk_does_not_promote_metadata() {
         .build()
         .unwrap();
     let mut store = MapStore::new();
-    let err = ops
-        .apply(br#"{"model":"old"} garbage"#, Some(&mut store))
-        .unwrap_err();
+    let err = ops.apply(br#"{"model":"old"} garbage"#, Some(&mut store)).unwrap_err();
     assert_eq!(err, JsonError::InvalidJson);
     assert!(store.metadata().is_empty());
 }
@@ -427,10 +434,7 @@ fn extract_only_trailing_junk_does_not_promote_metadata() {
 #[test]
 fn extract_only_trailing_junk_blocks_structured_metadata() {
     let ops = JsonOps::builder()
-        .extract(
-            "/user",
-            ExtractDest::structured("ext", "user"),
-        )
+        .extract("/user", ExtractDest::structured("ext", "user"))
         .unwrap()
         .build()
         .unwrap();
@@ -450,6 +454,7 @@ fn extract_header_allows_trailing_whitespace() {
         .build()
         .unwrap();
     let mut store = MapStore::new();
-    ops.apply(b"{\"model\":\"premium\"}\n  \t\r\n", Some(&mut store)).unwrap();
+    ops.apply(b"{\"model\":\"premium\"}\n  \t\r\n", Some(&mut store))
+        .unwrap();
     assert_eq!(store.request_headers(), &[("X-Model".to_owned(), "premium".to_owned())]);
 }
