@@ -20,10 +20,7 @@ use super::{
     skip::{bump_depth, expect_byte, next_byte, skip_bom, skip_string_with_meta, skip_value, skip_ws},
     store::JsonOpStore,
 };
-use crate::builtins::http::{
-    payload_processing::MAX_DYNAMIC_VALUE_LEN,
-    value_safety::contains_control_chars,
-};
+use crate::builtins::http::{payload_processing::MAX_DYNAMIC_VALUE_LEN, value_safety::contains_control_chars};
 
 /// Extra bytes reserved beyond input length and the compile-time growth hint.
 const OUTPUT_GROWTH_SLACK: usize = 64;
