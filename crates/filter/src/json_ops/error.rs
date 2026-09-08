@@ -12,7 +12,7 @@ pub enum JsonError {
     /// Input is not a single JSON value.
     #[error("invalid JSON")]
     InvalidJson,
-    /// Nesting exceeded [`MAX_JSON_DEPTH`].
+    /// Nesting exceeded the maximum JSON nesting depth.
     #[error("JSON nesting exceeds maximum depth")]
     Depth,
     /// Pointer, overlap, or source validation failed.

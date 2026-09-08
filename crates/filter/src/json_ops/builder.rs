@@ -254,19 +254,15 @@ fn encoded_last_object_token(tokens: &[String]) -> Option<Bytes> {
 
 /// Serialize environment text for injection as JSON bytes.
 fn json_bytes_from_env_text(raw: &str) -> Result<Bytes, JsonError> {
-    match serde_json::from_str::<serde_json::Value>(raw) {
-        Ok(value) => {
-            let bytes = serde_json::to_vec(&value)
-                .map_err(|e| JsonError::compile(format!("failed to serialize environment value as JSON: {e}")))?;
-            Ok(Bytes::from(bytes))
-        },
-        Err(_) => {
-            let bytes = serde_json::to_vec(raw).map_err(|e| {
-                JsonError::compile(format!("failed to serialize environment value as JSON string: {e}"))
-            })?;
-            Ok(Bytes::from(bytes))
-        },
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) {
+        let bytes = serde_json::to_vec(&value)
+            .map_err(|e| JsonError::compile(format!("failed to serialize environment value as JSON: {e}")))?;
+        return Ok(Bytes::from(bytes));
     }
+    let bytes = serde_json::to_vec(raw).map_err(|e| {
+        JsonError::compile(format!("failed to serialize environment value as JSON string: {e}"))
+    })?;
+    Ok(Bytes::from(bytes))
 }
 
 /// Serialize an environment variable for injection as JSON bytes.
@@ -326,6 +322,7 @@ fn overlapping_ops(a: &CompiledOp, b: &CompiledOp) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "tests")]
 mod env_text_tests {
     use super::json_bytes_from_env_text;
 

@@ -144,7 +144,7 @@ pub(super) struct CompiledOps {
     pub response: JsonOps,
 }
 
-/// Validate config and compile pointers through [`JsonOpsBuilder`].
+/// Validate config and compile pointers through [`JsonOps::builder`](crate::json_ops::JsonOps::builder).
 ///
 /// # Errors
 ///
@@ -224,43 +224,45 @@ fn extract_dest(direction: &str, cfg: &ExtractOpConfig) -> Result<ExtractDest, F
         + usize::from(cfg.structured_metadata.is_some())
         + usize::from(cfg.header.is_some());
     if n != 1 {
-        return Err(format!(
-            "json_body: {direction}_extract pointer '{}' must set exactly one of \
-             'metadata', 'structured_metadata', or 'header'",
-            cfg.pointer
-        )
-        .into());
+        return Err(extract_dest_count_error(direction, &cfg.pointer));
     }
     if let Some(key) = &cfg.metadata {
         return Ok(ExtractDest::metadata(key.clone()));
     }
     if let Some(header) = &cfg.header {
-        if direction == "response" {
-            return Err(format!(
-                "json_body: response_extract pointer '{}' cannot use 'header'; \
-                 use metadata or structured_metadata",
-                cfg.pointer
-            )
-            .into());
-        }
-        if header.is_empty() {
-            return Err(format!(
-                "json_body: {direction}_extract pointer '{}' 'header' must not be empty",
-                cfg.pointer
-            )
-            .into());
-        }
-        return Ok(ExtractDest::header(header.clone()));
+        return extract_dest_header(direction, &cfg.pointer, header);
     }
     match &cfg.structured_metadata {
         Some(meta) => Ok(ExtractDest::structured(meta.namespace.clone(), meta.key.clone())),
-        None => Err(format!(
-            "json_body: {direction}_extract pointer '{}' must set exactly one of \
-             'metadata', 'structured_metadata', or 'header'",
-            cfg.pointer
-        )
-        .into()),
+        None => Err(extract_dest_count_error(direction, &cfg.pointer)),
     }
+}
+
+/// Error when an extract op does not set exactly one destination field.
+fn extract_dest_count_error(direction: &str, pointer: &str) -> FilterError {
+    format!(
+        "json_body: {direction}_extract pointer '{pointer}' must set exactly one of \
+         'metadata', 'structured_metadata', or 'header'"
+    )
+    .into()
+}
+
+/// Map a YAML header extract destination after request/response checks.
+fn extract_dest_header(direction: &str, pointer: &str, header: &str) -> Result<ExtractDest, FilterError> {
+    if direction == "response" {
+        return Err(format!(
+            "json_body: response_extract pointer '{pointer}' cannot use 'header'; \
+             use metadata or structured_metadata"
+        )
+        .into());
+    }
+    if header.is_empty() {
+        return Err(format!(
+            "json_body: {direction}_extract pointer '{pointer}' 'header' must not be empty"
+        )
+        .into());
+    }
+    Ok(ExtractDest::header(header))
 }
 
 /// Require exactly one of `value`, `metadata`, `structured_metadata`, or `env_var`.
