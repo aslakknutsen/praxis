@@ -239,13 +239,7 @@ impl HttpFilter for JsonBodyFilter {
         if !end_of_stream {
             return Ok(FilterAction::Continue);
         }
-        apply_rewrite(
-            &self.request_ops,
-            self.on_invalid,
-            ctx,
-            body,
-            FitMode::Request,
-        )
+        apply_rewrite(&self.request_ops, self.on_invalid, ctx, body, FitMode::Request)
     }
 
     fn on_response_body(
@@ -257,13 +251,7 @@ impl HttpFilter for JsonBodyFilter {
         if !end_of_stream {
             return Ok(FilterAction::Continue);
         }
-        apply_rewrite(
-            &self.response_ops,
-            self.on_invalid,
-            ctx,
-            body,
-            FitMode::Response,
-        )
+        apply_rewrite(&self.response_ops, self.on_invalid, ctx, body, FitMode::Response)
     }
 }
 
