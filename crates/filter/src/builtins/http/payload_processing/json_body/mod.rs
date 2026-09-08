@@ -245,7 +245,6 @@ impl HttpFilter for JsonBodyFilter {
             ctx,
             body,
             FitMode::Request,
-            end_of_stream,
         )
     }
 
@@ -264,7 +263,6 @@ impl HttpFilter for JsonBodyFilter {
             ctx,
             body,
             FitMode::Response,
-            end_of_stream,
         )
     }
 }
@@ -283,17 +281,15 @@ enum FitMode {
 }
 
 /// Resolve context values, rewrite, and apply framing policy.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "framing policy is part of the rewrite apply path"
-)]
+///
+/// Callers must invoke this only at end of stream so `StreamBuffer` holds
+/// the full body before extract promotion or rewrite.
 fn apply_rewrite(
     op_set: &JsonOps,
     on_invalid: OnInvalidBehavior,
     ctx: &mut HttpFilterContext<'_>,
     body: &mut Option<Bytes>,
     fit: FitMode,
-    end_of_stream: bool,
 ) -> Result<FilterAction, FilterError> {
     if op_set.is_empty() {
         return Ok(FilterAction::Continue);
@@ -312,7 +308,6 @@ fn apply_rewrite(
             apply_fitted_body(body, original_len, outcome.output.unwrap_or_default(), fit);
             Ok(FilterAction::BodyDone)
         },
-        Err(_err) if op_set.is_extract_only() && !end_of_stream => Ok(FilterAction::Continue),
         Err(err) => handle_invalid(on_invalid, err.as_str()),
     }
 }
