@@ -22,6 +22,15 @@ fn parse_err(yaml: &str) -> String {
     JsonBodyFilter::from_config(&value).err().unwrap().to_string()
 }
 
+/// JSON nested deeper than the tokenizer depth limit (128 levels).
+fn depth_exceeded_body() -> Bytes {
+    let mut nested = String::from("1");
+    for _ in 0..130 {
+        nested = format!("[{nested}]");
+    }
+    Bytes::from(nested)
+}
+
 #[test]
 fn parses_header_like_config() {
     let filter = parse_filter(
@@ -361,6 +370,47 @@ async fn invalid_json_error() {
         .await
         .expect_err("on_invalid: error should return FilterError");
     assert!(err.to_string().contains("invalid JSON"), "got: {err}");
+}
+
+#[tokio::test]
+async fn depth_exceeded_reject() {
+    let filter = parse_filter(
+        r#"
+        on_invalid: reject
+        request_remove:
+          - /a
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body = Some(depth_exceeded_body());
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(
+        matches!(action, FilterAction::Reject(r) if r.status == 400),
+        "depth exceeded with on_invalid reject"
+    );
+}
+
+#[tokio::test]
+async fn depth_exceeded_error() {
+    let filter = parse_filter(
+        r#"
+        on_invalid: error
+        request_remove:
+          - /a
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body = Some(depth_exceeded_body());
+    let err = filter
+        .on_request_body(&mut ctx, &mut body, true)
+        .await
+        .expect_err("on_invalid: error should return FilterError");
+    assert!(
+        err.to_string().contains("JSON nesting exceeds maximum depth"),
+        "got: {err}"
+    );
 }
 
 #[test]
