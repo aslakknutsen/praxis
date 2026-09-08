@@ -156,11 +156,13 @@ pub(super) fn rewrite_document(
     let mut out = emit.then(|| Vec::with_capacity(rewrite_output_capacity(input.len(), op_set.growth_hint)));
     rewrite_value(input, &mut i, op_set, out.as_mut(), 0, &mut session)?;
 
+    skip_ws(input, &mut i);
     if emit {
-        skip_ws(input, &mut i);
         if i != input.len() {
             return Err(JsonError::InvalidJson);
         }
+    } else if i != input.len() && op_set.has_header_extract() {
+        session.capture_headers.clear();
     }
 
     Ok(finish_document(&session, store, out))
@@ -785,6 +787,39 @@ fn parse_string<'a>(input: &'a [u8], i: &mut usize) -> Result<(&'a [u8], Cow<'a,
     } else {
         let decoded = std::str::from_utf8(inner).map_err(|_e| JsonError::InvalidJson)?;
         Ok((raw, Cow::Borrowed(decoded)))
+    }
+}
+
+#[cfg(test)]
+mod header_promotion_tests {
+    use super::is_safe_header_promotion;
+    use crate::builtins::http::payload_processing::MAX_DYNAMIC_VALUE_LEN;
+
+    #[test]
+    fn rejects_oversized_values() {
+        let text = "a".repeat(MAX_DYNAMIC_VALUE_LEN + 1);
+        assert!(!is_safe_header_promotion(&text, "X-Model"));
+    }
+
+    #[test]
+    fn allows_values_at_limit() {
+        let text = "a".repeat(MAX_DYNAMIC_VALUE_LEN);
+        assert!(is_safe_header_promotion(&text, "X-Model"));
+    }
+
+    #[test]
+    fn rejects_newlines() {
+        assert!(!is_safe_header_promotion("bad\nvalue", "X-Model"));
+    }
+
+    #[test]
+    fn rejects_carriage_returns() {
+        assert!(!is_safe_header_promotion("bad\rvalue", "X-Model"));
+    }
+
+    #[test]
+    fn allows_horizontal_tab() {
+        assert!(is_safe_header_promotion("ok\tvalue", "X-Model"));
     }
 }
 
