@@ -8,11 +8,10 @@
 //! cargo bench -p praxis-tests-benches --bench json_body_heap --features dhat-heap
 //! ```
 
-#![expect(
+#![allow(
     clippy::min_ident_chars,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
+    clippy::missing_docs_in_private_items,
+    clippy::print_stdout,
     reason = "benchmarks"
 )]
 
