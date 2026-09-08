@@ -257,10 +257,7 @@ fn extract_dest_header(direction: &str, pointer: &str, header: &str) -> Result<E
         .into());
     }
     if header.is_empty() {
-        return Err(format!(
-            "json_body: {direction}_extract pointer '{pointer}' 'header' must not be empty"
-        )
-        .into());
+        return Err(format!("json_body: {direction}_extract pointer '{pointer}' 'header' must not be empty").into());
     }
     Ok(ExtractDest::header(header))
 }
