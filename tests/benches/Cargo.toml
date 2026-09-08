@@ -12,7 +12,7 @@ autobenches = false
 workspace = true
 
 [dependencies]
-dhat = { version = "0.3.3", optional = true }
+dhat = { workspace = true, optional = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
