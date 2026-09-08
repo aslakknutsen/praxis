@@ -120,8 +120,10 @@ pub(super) fn rewrite_output_capacity(input_len: usize, growth_hint: usize) -> u
 
 /// Walk `input` once, capturing extracts and optionally rewriting mutating ops.
 ///
-/// Extract-only op sets skip trailing-byte validation so a complete JSON value
-/// can be captured from a buffer that still has junk after it.
+/// Extract-only and mutating walks both require a single JSON value; only
+/// trailing whitespace may follow the document. Non-whitespace trailing content
+/// returns [`JsonError::InvalidJson`] so extract promotion cannot disagree with
+/// what a strict backend would parse.
 ///
 /// # Errors
 ///
@@ -157,12 +159,8 @@ pub(super) fn rewrite_document(
     rewrite_value(input, &mut i, op_set, out.as_mut(), 0, &mut session)?;
 
     skip_ws(input, &mut i);
-    if emit {
-        if i != input.len() {
-            return Err(JsonError::InvalidJson);
-        }
-    } else if i != input.len() && op_set.has_header_extract() {
-        session.capture_headers.clear();
+    if i != input.len() {
+        return Err(JsonError::InvalidJson);
     }
 
     Ok(finish_document(&session, store, out))

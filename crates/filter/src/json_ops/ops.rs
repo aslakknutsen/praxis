@@ -110,18 +110,11 @@ pub(crate) struct CompiledOpSet {
     pub index: OpPathIndex,
     /// Sum of static payload and encoded key sizes for output capacity.
     pub growth_hint: usize,
-    /// True when every op is extract (no body rewrite, skip trailing-byte check).
+    /// True when every op is extract (no body rewrite).
     pub extract_only: bool,
 }
 
 impl CompiledOpSet {
-    /// Whether any op promotes an extract into a request header.
-    pub(crate) fn has_header_extract(&self) -> bool {
-        self.ops.iter().any(|op| {
-            op.kind == OpKind::Extract && matches!(op.dest, Some(ExtractDest::Header(_)))
-        })
-    }
-
     /// Empty op set: walk still validates JSON when applied with emit.
     pub(crate) fn empty() -> Self {
         Self {

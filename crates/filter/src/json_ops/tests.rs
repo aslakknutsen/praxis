@@ -25,7 +25,7 @@ fn rewrite_str(input: &str, ops: &[ResolvedOp]) -> Result<String, JsonError> {
     rewrite(input.as_bytes(), ops).map(|b| String::from_utf8(b).unwrap())
 }
 
-use super::{ExtractDest, JsonOps, JsonValue, MapStore};
+use super::{ExtractDest, JsonOps, JsonOpStore, JsonValue, MapStore};
 
 #[test]
 fn replace_object_field() {
@@ -402,8 +402,44 @@ fn extract_header_skips_on_trailing_junk() {
         .build()
         .unwrap();
     let mut store = MapStore::new();
-    ops.apply(br#"{"model":"premium"} garbage"#, Some(&mut store)).unwrap();
+    let err = ops
+        .apply(br#"{"model":"premium"} garbage"#, Some(&mut store))
+        .unwrap_err();
+    assert_eq!(err, JsonError::InvalidJson);
     assert!(store.request_headers().is_empty(), "trailing junk must block header promotion");
+}
+
+#[test]
+fn extract_only_trailing_junk_does_not_promote_metadata() {
+    let ops = JsonOps::builder()
+        .extract("/model", ExtractDest::metadata("original.model"))
+        .unwrap()
+        .build()
+        .unwrap();
+    let mut store = MapStore::new();
+    let err = ops
+        .apply(br#"{"model":"old"} garbage"#, Some(&mut store))
+        .unwrap_err();
+    assert_eq!(err, JsonError::InvalidJson);
+    assert!(store.metadata().is_empty());
+}
+
+#[test]
+fn extract_only_trailing_junk_blocks_structured_metadata() {
+    let ops = JsonOps::builder()
+        .extract(
+            "/user",
+            ExtractDest::structured("ext", "user"),
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+    let mut store = MapStore::new();
+    let err = ops
+        .apply(br#"{"user":{"id":1}} garbage"#, Some(&mut store))
+        .unwrap_err();
+    assert_eq!(err, JsonError::InvalidJson);
+    assert!(store.get_structured("ext", "user").is_none());
 }
 
 #[test]
@@ -416,19 +452,4 @@ fn extract_header_allows_trailing_whitespace() {
     let mut store = MapStore::new();
     ops.apply(b"{\"model\":\"premium\"}\n  \t\r\n", Some(&mut store)).unwrap();
     assert_eq!(store.request_headers(), &[("X-Model".to_owned(), "premium".to_owned())]);
-}
-
-#[test]
-fn extract_metadata_keeps_value_when_header_blocked_by_trailing_junk() {
-    let ops = JsonOps::builder()
-        .extract("/model", ExtractDest::metadata("original.model"))
-        .unwrap()
-        .extract("/stream", ExtractDest::header("X-Stream"))
-        .unwrap()
-        .build()
-        .unwrap();
-    let mut store = MapStore::new();
-    ops.apply(br#"{"model":"old","stream":true} garbage"#, Some(&mut store)).unwrap();
-    assert_eq!(store.metadata().get("original.model").map(String::as_str), Some("old"));
-    assert!(store.request_headers().is_empty(), "header must be skipped when trailing junk is present");
 }

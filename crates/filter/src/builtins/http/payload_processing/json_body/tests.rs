@@ -563,8 +563,83 @@ async fn extract_header_trailing_junk_does_not_promote() {
     let mut ctx = crate::test_utils::make_filter_context(&req);
     let mut body = Some(Bytes::from_static(br#"{"model":"premium"} garbage"#));
     let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
-    assert!(matches!(action, FilterAction::BodyDone));
+    assert!(matches!(action, FilterAction::Continue));
     assert!(ctx.extra_request_headers.is_empty(), "no header from a body with trailing junk");
+}
+
+#[tokio::test]
+async fn extract_only_trailing_junk_does_not_promote_metadata() {
+    let filter = parse_filter(
+        r#"
+        request_extract:
+          - pointer: /model
+            metadata: original.model
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body = Some(Bytes::from_static(br#"{"model":"old","x":1} not-json"#));
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(matches!(action, FilterAction::Continue));
+    assert!(ctx.get_metadata("original.model").is_none());
+}
+
+#[tokio::test]
+async fn extract_only_trailing_junk_blocks_structured_metadata() {
+    let filter = parse_filter(
+        r#"
+        request_extract:
+          - pointer: /user
+            structured_metadata:
+              namespace: ext
+              key: user
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body = Some(Bytes::from_static(br#"{"user":{"id":1}} garbage"#));
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(matches!(action, FilterAction::Continue));
+    assert!(ctx.get_structured_metadata("ext", "user").is_none());
+}
+
+#[tokio::test]
+async fn extract_only_trailing_junk_on_invalid_continue() {
+    let filter = parse_filter(
+        r#"
+        on_invalid: continue
+        request_extract:
+          - pointer: /model
+            metadata: original.model
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body = Some(Bytes::from_static(br#"{"model":"old"} garbage"#));
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(matches!(action, FilterAction::Continue));
+    assert!(ctx.get_metadata("original.model").is_none());
+}
+
+#[tokio::test]
+async fn extract_only_trailing_junk_on_invalid_reject() {
+    let filter = parse_filter(
+        r#"
+        on_invalid: reject
+        request_extract:
+          - pointer: /model
+            metadata: original.model
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body = Some(Bytes::from_static(br#"{"model":"old"} garbage"#));
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(
+        matches!(action, FilterAction::Reject(r) if r.status == 400),
+        "trailing junk with on_invalid reject"
+    );
+    assert!(ctx.get_metadata("original.model").is_none());
 }
 
 #[tokio::test]
@@ -583,26 +658,6 @@ async fn extract_header_trailing_whitespace_still_promotes() {
     assert!(matches!(action, FilterAction::BodyDone));
     assert_eq!(ctx.extra_request_headers.len(), 1);
     assert_eq!(ctx.extra_request_headers[0].1, "premium");
-}
-
-#[tokio::test]
-async fn extract_metadata_keeps_value_when_header_blocked_by_trailing_junk() {
-    let filter = parse_filter(
-        r#"
-        request_extract:
-          - pointer: /model
-            metadata: original.model
-          - pointer: /stream
-            header: X-Stream
-        "#,
-    );
-    let req = crate::test_utils::make_request(http::Method::POST, "/");
-    let mut ctx = crate::test_utils::make_filter_context(&req);
-    let mut body = Some(Bytes::from_static(br#"{"model":"old","stream":true} garbage"#));
-    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
-    assert!(matches!(action, FilterAction::BodyDone));
-    assert_eq!(ctx.get_metadata("original.model"), Some("old"));
-    assert!(ctx.extra_request_headers.is_empty());
 }
 
 #[test]
@@ -707,23 +762,6 @@ async fn extract_missing_pointer_skips() {
     let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
     assert!(matches!(action, FilterAction::BodyDone));
     assert!(ctx.get_metadata("gone").is_none(), "missing pointer skips");
-}
-
-#[tokio::test]
-async fn extract_only_early_exit_ignores_trailing_junk() {
-    let filter = parse_filter(
-        r#"
-        request_extract:
-          - pointer: /model
-            metadata: original.model
-        "#,
-    );
-    let req = crate::test_utils::make_request(http::Method::POST, "/");
-    let mut ctx = crate::test_utils::make_filter_context(&req);
-    let mut body = Some(Bytes::from_static(br#"{"model":"old","x":1} not-json"#));
-    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
-    assert!(matches!(action, FilterAction::BodyDone));
-    assert_eq!(ctx.get_metadata("original.model"), Some("old"));
 }
 
 #[tokio::test]
