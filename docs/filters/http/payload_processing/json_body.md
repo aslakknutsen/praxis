@@ -75,8 +75,8 @@ filter: json_body
 request_extract:
   - pointer: /model
     metadata: original.model
-  - pointer: /model
-    header: X-Model
+  - pointer: /stream
+    header: X-Stream
 request_add:
   - pointer: /tenant
     value: acme
