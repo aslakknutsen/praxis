@@ -259,9 +259,8 @@ fn json_bytes_from_env_text(raw: &str) -> Result<Bytes, JsonError> {
             .map_err(|e| JsonError::compile(format!("failed to serialize environment value as JSON: {e}")))?;
         return Ok(Bytes::from(bytes));
     }
-    let bytes = serde_json::to_vec(raw).map_err(|e| {
-        JsonError::compile(format!("failed to serialize environment value as JSON string: {e}"))
-    })?;
+    let bytes = serde_json::to_vec(raw)
+        .map_err(|e| JsonError::compile(format!("failed to serialize environment value as JSON string: {e}")))?;
     Ok(Bytes::from(bytes))
 }
 
