@@ -481,7 +481,8 @@ async fn extract_object_to_header_uses_raw_json() {
     let req = crate::test_utils::make_request(http::Method::POST, "/");
     let mut ctx = crate::test_utils::make_filter_context(&req);
     let mut body = Some(Bytes::from_static(br#"{"user":{"id":1}}"#));
-    let _ = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(matches!(action, FilterAction::BodyDone));
     assert_eq!(ctx.extra_request_headers.len(), 1);
     assert_eq!(ctx.extra_request_headers[0].1, r#"{"id":1}"#);
 }
