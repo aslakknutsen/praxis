@@ -6,12 +6,16 @@
 //! Fixtures mimic an OpenAI-style chat completion request body: `model`,
 //! `messages`, `temperature`, `max_tokens`, and `stream`.
 
-#![expect(
-    clippy::min_ident_chars,
-    clippy::unwrap_used,
+#![allow(
     clippy::expect_used,
-    clippy::panic,
     clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::items_after_statements,
+    clippy::let_underscore_must_use,
+    clippy::missing_docs_in_private_items,
+    clippy::panic,
+    clippy::too_many_lines,
+    clippy::unwrap_used,
     reason = "benchmarks"
 )]
 
@@ -111,7 +115,7 @@ pub(crate) fn make_json_body(layout: BodyLayout, target_bytes: usize) -> Vec<u8>
 
     emit_member(&mut body, &mut first, r#""messages":["#);
     let mut first_msg = true;
-    let mut turn = 0usize;
+    let mut turn = 0_usize;
     let trailer_len = chat_trailer_len(layout);
     while body.len() + trailer_len + 1 < target_bytes {
         append_message_turn(&mut body, turn, &mut first_msg);

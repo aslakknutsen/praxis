@@ -322,7 +322,7 @@ fn overlapping_ops(a: &CompiledOp, b: &CompiledOp) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, reason = "tests")]
+#[expect(clippy::unwrap_used, reason = "tests")]
 mod env_text_tests {
     use super::json_bytes_from_env_text;
 
