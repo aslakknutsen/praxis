@@ -390,7 +390,6 @@ name = "benchmarks"
 version = "0.5.4"
 dependencies = [
  "chrono",
- "dhat",
  "serde",
  "serde_json",
  "tempfile",
