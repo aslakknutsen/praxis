@@ -86,7 +86,7 @@ impl Default for JsonBodyOps {
 /// add-over-existing rewrite every matching member; add injects once only
 /// when no match exists. Extract keeps the last matching value. Add `/-`
 /// appends to arrays only; on an object the operation is skipped (same as a
-/// missing parent). Invalid JSON follows [`on_invalid`].
+/// missing parent). Invalid JSON follows `on_invalid` ([`OnInvalidBehavior`]).
 ///
 /// Extract-only directions are `ReadOnly`. Mixed extract and rewrite uses one
 /// walk; metadata-sourced add/replace resolve lazily at each splice site and
@@ -137,8 +137,6 @@ impl Default for JsonBodyOps {
 /// let filter = JsonBodyFilter::from_config(&yaml).unwrap();
 /// assert_eq!(filter.name(), "json_body");
 /// ```
-///
-/// [`on_invalid`]: JsonBodyFilter::on_invalid
 pub struct JsonBodyFilter {
     /// Maximum request/response body size for `StreamBuffer`.
     max_body_bytes: usize,
