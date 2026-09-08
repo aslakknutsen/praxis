@@ -782,7 +782,7 @@ async fn extract_only_incomplete_before_eos_continues() {
 }
 
 #[tokio::test]
-async fn extract_only_complete_before_eos_is_body_done() {
+async fn extract_only_complete_before_eos_continues() {
     let filter = parse_filter(
         r#"
         request_extract:
@@ -794,6 +794,23 @@ async fn extract_only_complete_before_eos_is_body_done() {
     let mut ctx = crate::test_utils::make_filter_context(&req);
     let mut body = Some(Bytes::from_static(br#"{"model":"old"}"#));
     let action = filter.on_request_body(&mut ctx, &mut body, false).await.unwrap();
+    assert!(matches!(action, FilterAction::Continue));
+    assert!(ctx.get_metadata("original.model").is_none());
+}
+
+#[tokio::test]
+async fn extract_only_promotes_at_eos() {
+    let filter = parse_filter(
+        r#"
+        request_extract:
+          - pointer: /model
+            metadata: original.model
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body = Some(Bytes::from_static(br#"{"model":"old"}"#));
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
     assert!(matches!(action, FilterAction::BodyDone));
     assert_eq!(ctx.get_metadata("original.model"), Some("old"));
 }
