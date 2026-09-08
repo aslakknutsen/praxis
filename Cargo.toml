@@ -44,6 +44,7 @@ cargo_metadata = "0.23.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 clap = { version = "4.6.7", features = ["derive"] }
 criterion = { version = "0.8.2", features = ["async_tokio"] }
+dhat = "0.3.3"
 governor = "0.10.4"
 dashmap = "6.2.1"
 futures = "0.3.34"
