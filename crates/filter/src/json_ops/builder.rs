@@ -256,9 +256,8 @@ fn encoded_last_object_token(tokens: &[String]) -> Option<Bytes> {
 fn json_bytes_from_env_text(raw: &str) -> Result<Bytes, JsonError> {
     match serde_json::from_str::<serde_json::Value>(raw) {
         Ok(value) => {
-            let bytes = serde_json::to_vec(&value).map_err(|e| {
-                JsonError::compile(format!("failed to serialize environment value as JSON: {e}"))
-            })?;
+            let bytes = serde_json::to_vec(&value)
+                .map_err(|e| JsonError::compile(format!("failed to serialize environment value as JSON: {e}")))?;
             Ok(Bytes::from(bytes))
         },
         Err(_) => {
