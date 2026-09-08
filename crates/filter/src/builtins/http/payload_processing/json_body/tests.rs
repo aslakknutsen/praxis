@@ -514,6 +514,97 @@ async fn extract_object_to_header_uses_raw_json() {
     assert_eq!(ctx.extra_request_headers[0].1, r#"{"id":1}"#);
 }
 
+#[tokio::test]
+async fn extract_oversized_header_is_skipped() {
+    let filter = parse_filter(
+        r#"
+        request_extract:
+          - pointer: /model
+            header: X-Model
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let long = "a".repeat(crate::builtins::http::payload_processing::MAX_DYNAMIC_VALUE_LEN + 1);
+    let payload = format!(r#"{{"model":"{long}"}}"#);
+    let mut body = Some(Bytes::from(payload));
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(matches!(action, FilterAction::BodyDone));
+    assert!(ctx.extra_request_headers.is_empty(), "256-byte header cap");
+}
+
+#[tokio::test]
+async fn extract_header_skips_control_characters() {
+    let filter = parse_filter(
+        r#"
+        request_extract:
+          - pointer: /model
+            header: X-Model
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body = Some(Bytes::from_static(br#"{"model":"bad\nvalue"}"#));
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(matches!(action, FilterAction::BodyDone));
+    assert!(ctx.extra_request_headers.is_empty(), "control characters must not reach headers");
+}
+
+#[tokio::test]
+async fn extract_header_trailing_junk_does_not_promote() {
+    let filter = parse_filter(
+        r#"
+        request_extract:
+          - pointer: /model
+            header: X-Model
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body = Some(Bytes::from_static(br#"{"model":"premium"} garbage"#));
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(matches!(action, FilterAction::BodyDone));
+    assert!(ctx.extra_request_headers.is_empty(), "no header from a body with trailing junk");
+}
+
+#[tokio::test]
+async fn extract_header_trailing_whitespace_still_promotes() {
+    let filter = parse_filter(
+        r#"
+        request_extract:
+          - pointer: /model
+            header: X-Model
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body = Some(Bytes::from_static(b"{\"model\":\"premium\"}\n  \t\r\n"));
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(matches!(action, FilterAction::BodyDone));
+    assert_eq!(ctx.extra_request_headers.len(), 1);
+    assert_eq!(ctx.extra_request_headers[0].1, "premium");
+}
+
+#[tokio::test]
+async fn extract_metadata_keeps_value_when_header_blocked_by_trailing_junk() {
+    let filter = parse_filter(
+        r#"
+        request_extract:
+          - pointer: /model
+            metadata: original.model
+          - pointer: /stream
+            header: X-Stream
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body = Some(Bytes::from_static(br#"{"model":"old","stream":true} garbage"#));
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(matches!(action, FilterAction::BodyDone));
+    assert_eq!(ctx.get_metadata("original.model"), Some("old"));
+    assert!(ctx.extra_request_headers.is_empty());
+}
+
 #[test]
 fn rejects_response_extract_header() {
     let err = parse_err(

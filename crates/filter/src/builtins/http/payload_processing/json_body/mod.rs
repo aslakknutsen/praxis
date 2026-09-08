@@ -76,7 +76,8 @@ impl Default for JsonBodyOps {
 /// metadata, or a request header without changing the body.
 /// `filter_metadata` values over 256 bytes are dropped; use structured
 /// metadata for nested or larger values. Header promotion skips values over
-/// 256 bytes or containing control characters.
+/// 256 bytes or containing control characters, and skips when non-whitespace
+/// content follows the JSON value (metadata extract still runs).
 /// Mutating pointers must not overlap (equal or prefix) within a direction.
 /// Duplicate extract pointers are rejected; nested extract pointers are allowed.
 /// Unused subtrees are copied as byte spans. Missing parents, missing

@@ -115,6 +115,13 @@ pub(crate) struct CompiledOpSet {
 }
 
 impl CompiledOpSet {
+    /// Whether any op promotes an extract into a request header.
+    pub(crate) fn has_header_extract(&self) -> bool {
+        self.ops.iter().any(|op| {
+            op.kind == OpKind::Extract && matches!(op.dest, Some(ExtractDest::Header(_)))
+        })
+    }
+
     /// Empty op set: walk still validates JSON when applied with emit.
     pub(crate) fn empty() -> Self {
         Self {
