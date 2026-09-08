@@ -40,6 +40,33 @@ fn parses_header_like_config() {
 }
 
 #[test]
+fn parses_documented_extract_and_header_combo() {
+    let filter = parse_filter(
+        r#"
+        request_extract:
+          - pointer: /model
+            metadata: original.model
+          - pointer: /stream
+            header: X-Stream
+        request_add:
+          - pointer: /tenant
+            value: acme
+          - pointer: /original_model
+            metadata: original.model
+        request_remove:
+          - /password
+        request_replace:
+          - pointer: /model
+            value: forced-model
+        response_remove:
+          - /internal
+        "#,
+    );
+    assert_eq!(filter.name(), "json_body");
+    assert_eq!(filter.request_body_access(), crate::BodyAccess::ReadWrite);
+}
+
+#[test]
 fn from_ops_constructs_without_yaml() {
     let request = JsonOps::builder()
         .replace("/model", JsonValue::static_json(json!("forced-model")).unwrap())
