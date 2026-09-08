@@ -444,6 +444,8 @@ mod macro_tests {
 // -----------------------------------------------------------------------------
 
 #[cfg(any(test, feature = "bench-internals"))]
+#[cfg_attr(feature = "bench-internals", allow(dead_code, reason = "only used under cfg(test)"))]
+/// Shared helpers for filter unit tests and `bench-internals` benchmarks.
 #[expect(clippy::allow_attributes, reason = "blanket test suppressions")]
 #[allow(clippy::expect_used, reason = "test utilities")]
 pub(crate) mod test_utils {
@@ -457,6 +459,7 @@ pub(crate) mod test_utils {
     /// Deterministic ID generator for tests (seed=0).
     static TEST_ID_GENERATOR: LazyLock<IdGenerator> = LazyLock::new(|| IdGenerator::with_seed(0));
 
+    /// Build a minimal HTTP request for filter unit tests.
     pub(crate) fn make_request(method: Method, path: &str) -> Request {
         Request {
             method,
@@ -465,6 +468,7 @@ pub(crate) mod test_utils {
         }
     }
 
+    /// Build a default [`HttpFilterContext`] for filter unit tests.
     #[expect(clippy::allow_attributes, reason = "blanket test suppressions")]
     #[allow(
         clippy::too_many_lines,
@@ -523,7 +527,6 @@ pub(crate) mod test_utils {
     }
 
     /// Build a minimal OK response for filter unit tests.
-    #[cfg_attr(feature = "bench-internals", allow(dead_code))]
     pub(crate) fn make_response() -> crate::context::Response {
         crate::context::Response {
             headers: HeaderMap::new(),
