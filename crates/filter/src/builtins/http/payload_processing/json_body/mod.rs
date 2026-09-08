@@ -90,7 +90,8 @@ impl Default for JsonBodyOps {
 /// appends to arrays only; on an object the operation is skipped (same as a
 /// missing parent). Invalid JSON follows `on_invalid` ([`OnInvalidBehavior`]).
 ///
-/// Extract-only directions are `ReadOnly`. Mixed extract and rewrite uses one
+/// Extract-only directions are `ReadOnly` and defer extract until end of stream
+/// so promotion sees the full `StreamBuffer` body. Mixed extract and rewrite uses one
 /// walk; metadata-sourced add/replace resolve lazily at each splice site and
 /// are skipped when the extract value is not yet available.
 ///
@@ -235,7 +236,7 @@ impl HttpFilter for JsonBodyFilter {
         body: &mut Option<Bytes>,
         end_of_stream: bool,
     ) -> Result<FilterAction, FilterError> {
-        if !self.request_ops.is_extract_only() && !end_of_stream {
+        if !end_of_stream {
             return Ok(FilterAction::Continue);
         }
         apply_rewrite(
@@ -254,7 +255,7 @@ impl HttpFilter for JsonBodyFilter {
         body: &mut Option<Bytes>,
         end_of_stream: bool,
     ) -> Result<FilterAction, FilterError> {
-        if !self.response_ops.is_extract_only() && !end_of_stream {
+        if !end_of_stream {
             return Ok(FilterAction::Continue);
         }
         apply_rewrite(
