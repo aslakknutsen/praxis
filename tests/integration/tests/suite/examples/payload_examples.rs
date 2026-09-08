@@ -14,6 +14,14 @@ use praxis_test_utils::{
 use super::load_example_config;
 
 // -----------------------------------------------------------------------------
+// Constants
+// -----------------------------------------------------------------------------
+
+const JSON_BODY_EXAMPLE: &str = "payload-processing/json-body.yaml";
+const JSON_BODY_PAYLOAD: &str =
+    r#"{"model":"old","secret":"s3cret","prompt":"hi","stream":true,"user":{"id":1},"internal":"drop-me"}"#;
+
+// -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------
 
@@ -158,23 +166,38 @@ fn json_body_rewrites_request_payload() {
     let backend = start_echo_backend();
     let proxy_port = free_port();
     let config = load_example_config(
-        "payload-processing/json-body.yaml",
+        JSON_BODY_EXAMPLE,
         proxy_port,
         HashMap::from([("127.0.0.1:3000", backend.port())]),
     );
     let proxy = start_proxy(&config);
 
-    let raw = http_send(
-        proxy.addr(),
-        &json_post("/v1/chat", r#"{"model":"old","secret":"s3cret","prompt":"hi"}"#),
-    );
+    let raw = http_send(proxy.addr(), &json_post("/v1/chat", JSON_BODY_PAYLOAD));
     assert_eq!(parse_status(&raw), 200, "json_body example should return 200");
     let body = parse_body(&raw);
     let parsed: serde_json::Value =
-        serde_json::from_str(&body).unwrap_or_else(|e| panic!("upstream echo should be JSON, got {body:?}: {e}"));
+        serde_json::from_str(&body).unwrap_or_else(|e| panic!("echoed body should be JSON, got {body:?}: {e}"));
     assert_eq!(parsed["model"], "forced-model", "replace /model");
     assert_eq!(parsed["tenant"], "acme", "add /tenant");
     assert_eq!(parsed["prompt"], "hi", "unmatched fields copied");
+    assert_eq!(parsed["stream"], serde_json::json!(true), "unmatched /stream copied");
+    assert_eq!(parsed["user"], serde_json::json!({"id": 1}), "unmatched /user copied");
     assert_eq!(parsed["original_model"], "old", "extract /model then add from metadata");
     assert!(parsed.get("secret").is_none(), "remove /secret");
+    assert!(parsed.get("internal").is_none(), "response_remove /internal");
+}
+
+#[test]
+fn json_body_rejects_invalid_json() {
+    let backend = start_echo_backend();
+    let proxy_port = free_port();
+    let config = load_example_config(
+        JSON_BODY_EXAMPLE,
+        proxy_port,
+        HashMap::from([("127.0.0.1:3000", backend.port())]),
+    );
+    let proxy = start_proxy(&config);
+
+    let raw = http_send(proxy.addr(), &json_post("/v1/chat", "not-json"));
+    assert_eq!(parse_status(&raw), 400, "on_invalid reject should return 400");
 }
