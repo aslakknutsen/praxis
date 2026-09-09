@@ -355,6 +355,17 @@ fn env_var_missing_fails_at_build() {
 }
 
 #[test]
+fn builder_rejects_invalid_extract_header_name() {
+    let err = JsonOps::builder()
+        .extract("/model", ExtractDest::header("bad name"))
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("invalid header name"),
+        "got: {err}"
+    );
+}
+
+#[test]
 fn extract_to_request_header() {
     let ops = JsonOps::builder()
         .extract("/model", ExtractDest::header("X-Model"))

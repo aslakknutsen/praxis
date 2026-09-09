@@ -276,6 +276,9 @@ fn validate_extract_dest(dest: &ExtractDest) -> Result<(), JsonError> {
     match dest {
         ExtractDest::Metadata(key) if key.is_empty() => Err(JsonError::compile("extract 'metadata' must not be empty")),
         ExtractDest::Header(name) if name.is_empty() => Err(JsonError::compile("extract 'header' must not be empty")),
+        ExtractDest::Header(name) if http::header::HeaderName::from_bytes(name.as_bytes()).is_err() => Err(
+            JsonError::compile(format!("extract 'header' has invalid header name '{name}'")),
+        ),
         ExtractDest::Structured { namespace, key } if namespace.is_empty() || key.is_empty() => Err(
             JsonError::compile("extract structured_metadata namespace and key must not be empty"),
         ),

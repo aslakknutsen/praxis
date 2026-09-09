@@ -717,6 +717,21 @@ async fn extract_header_trailing_whitespace_still_promotes() {
 }
 
 #[test]
+fn rejects_invalid_extract_header_name() {
+    let err = parse_err(
+        r#"
+        request_extract:
+          - pointer: /model
+            header: "bad name"
+        "#,
+    );
+    assert!(
+        err.contains("invalid header name") && err.contains("bad name"),
+        "got: {err}"
+    );
+}
+
+#[test]
 fn rejects_response_extract_header() {
     let err = parse_err(
         r#"
