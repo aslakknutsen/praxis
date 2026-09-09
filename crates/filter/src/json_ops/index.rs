@@ -167,6 +167,11 @@ impl OpPathIndex {
         node.extract_branch || node.extract_idx.is_some()
     }
 
+    /// Whether any extract op targets a path strictly below `path`.
+    pub(super) fn has_descendant_extracts(&self, path: &[PathToken]) -> bool {
+        self.node_at(path).extract_branch
+    }
+
     /// Whether this node is an op target or has ops below it (must tokenize, not span-copy).
     pub(super) fn has_descendant_ops(&self, path: &[PathToken]) -> bool {
         Self::node_has_work(self.node_at(path))
