@@ -147,7 +147,7 @@ pub(super) fn rewrite_document(
 
     let emit = !op_set.extract_only;
     if let Some(root) = root_replace(op_set, &mut session) {
-        skip_value(input, &mut i, 0)?;
+        consume_value_for_mutate(input, &mut i, 0, op_set, &mut session)?;
         skip_ws(input, &mut i);
         if i != input.len() {
             return Err(JsonError::InvalidJson);
@@ -272,18 +272,25 @@ fn write_capture_dest(json: &[u8], dest: &ExtractDest, session: &mut RewriteSess
     }
 }
 
-/// Skip one value and capture it if an extract matches `session.path`.
-fn capture_value_at_path(
+/// Advance past one JSON value during remove/replace, capturing extracts.
+///
+/// Descendant extracts under a removed/replaced parent require a full walk;
+/// otherwise a fast skip plus capture at exactly `session.path` is enough.
+fn consume_value_for_mutate(
     input: &[u8],
     i: &mut usize,
     depth: u32,
     op_set: &CompiledOpSet,
     session: &mut RewriteSession,
 ) -> Result<(), JsonError> {
-    let start = *i;
-    skip_value(input, i, depth)?;
-    store_capture(input, start, *i, op_set, session);
-    Ok(())
+    if op_set.index.has_descendant_extracts(&session.path) {
+        rewrite_value(input, i, op_set, None, depth, session)
+    } else {
+        let start = *i;
+        skip_value(input, i, depth)?;
+        store_capture(input, start, *i, op_set, session);
+        Ok(())
+    }
 }
 
 /// Copy one JSON value as a raw span (no per-member tokenize of its interior).
@@ -547,11 +554,11 @@ fn apply_object_mutate(
     session: &mut RewriteSession,
 ) -> Result<(), JsonError> {
     match op.kind {
-        OpKind::Remove => capture_value_at_path(input, i, depth, op_set, session),
+        OpKind::Remove => consume_value_for_mutate(input, i, depth, op_set, session),
         OpKind::Replace | OpKind::Add => {
             skip_ws(input, i);
             let value_start = *i;
-            capture_value_at_path(input, i, depth, op_set, session)?;
+            consume_value_for_mutate(input, i, depth, op_set, session)?;
             if let Some(out_buf) = out.as_mut() {
                 if let Some(payload) = resolve_payload(op_idx, op, session) {
                     emit_separator(out_buf, emitted_any);
@@ -710,11 +717,11 @@ fn rewrite_array_member(
     };
     session.path.push(PathToken::Index(orig_idx));
     match op.kind {
-        OpKind::Remove => capture_value_at_path(input, i, depth, op_set, session)?,
+        OpKind::Remove => consume_value_for_mutate(input, i, depth, op_set, session)?,
         OpKind::Replace => {
             skip_ws(input, i);
             let value_start = *i;
-            capture_value_at_path(input, i, depth, op_set, session)?;
+            consume_value_for_mutate(input, i, depth, op_set, session)?;
             if let Some(out_buf) = out.as_mut() {
                 if let Some(payload) = resolve_payload(op_idx, op, session) {
                     emit_separator(out_buf, emitted_any);

@@ -447,6 +447,64 @@ fn extract_only_trailing_junk_blocks_structured_metadata() {
 }
 
 #[test]
+fn extract_descendant_before_remove_parent() {
+    let ops = JsonOps::builder()
+        .extract("/a/b", ExtractDest::metadata("nested.b"))
+        .unwrap()
+        .remove("/a")
+        .unwrap()
+        .build()
+        .unwrap();
+    let mut store = MapStore::new();
+    let rewrite = ops
+        .apply(br#"{"a":{"b":"keep"},"other":1}"#, Some(&mut store))
+        .unwrap();
+    assert_eq!(rewrite.output.as_deref(), Some(br#"{"other":1}"#.as_ref()));
+    assert_eq!(store.metadata().get("nested.b").map(String::as_str), Some("keep"));
+}
+
+#[test]
+fn extract_descendant_before_replace_parent() {
+    let ops = JsonOps::builder()
+        .extract("/a/b", ExtractDest::metadata("nested.b"))
+        .unwrap()
+        .replace("/a", JsonValue::static_json(json!({"x":9})).unwrap())
+        .unwrap()
+        .build()
+        .unwrap();
+    let mut store = MapStore::new();
+    let rewrite = ops
+        .apply(br#"{"a":{"b":"keep"},"other":1}"#, Some(&mut store))
+        .unwrap();
+    let out = rewrite.output.expect("mutating ops emit a body");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&out).unwrap(),
+        json!({"a": {"x": 9}, "other": 1})
+    );
+    assert_eq!(store.metadata().get("nested.b").map(String::as_str), Some("keep"));
+}
+
+#[test]
+fn extract_root_before_root_replace() {
+    let ops = JsonOps::builder()
+        .extract("", ExtractDest::metadata("original.root"))
+        .unwrap()
+        .replace("", JsonValue::static_json(json!({"replaced":true})).unwrap())
+        .unwrap()
+        .build()
+        .unwrap();
+    let mut store = MapStore::new();
+    let rewrite = ops
+        .apply(br#"{"model":"old","n":1}"#, Some(&mut store))
+        .unwrap();
+    assert_eq!(rewrite.output.as_deref(), Some(br#"{"replaced":true}"#.as_ref()));
+    assert_eq!(
+        store.metadata().get("original.root").map(String::as_str),
+        Some(r#"{"model":"old","n":1}"#)
+    );
+}
+
+#[test]
 fn extract_header_allows_trailing_whitespace() {
     let ops = JsonOps::builder()
         .extract("/model", ExtractDest::header("X-Model"))
