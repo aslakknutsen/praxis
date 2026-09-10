@@ -359,10 +359,7 @@ fn builder_rejects_invalid_extract_header_name() {
     let err = JsonOps::builder()
         .extract("/model", ExtractDest::header("bad name"))
         .unwrap_err();
-    assert!(
-        err.to_string().contains("invalid header name"),
-        "got: {err}"
-    );
+    assert!(err.to_string().contains("invalid header name"), "got: {err}");
 }
 
 #[test]
@@ -467,9 +464,7 @@ fn extract_descendant_before_remove_parent() {
         .build()
         .unwrap();
     let mut store = MapStore::new();
-    let rewrite = ops
-        .apply(br#"{"a":{"b":"keep"},"other":1}"#, Some(&mut store))
-        .unwrap();
+    let rewrite = ops.apply(br#"{"a":{"b":"keep"},"other":1}"#, Some(&mut store)).unwrap();
     assert_eq!(rewrite.output.as_deref(), Some(br#"{"other":1}"#.as_ref()));
     assert_eq!(store.metadata().get("nested.b").map(String::as_str), Some("keep"));
 }
@@ -484,9 +479,7 @@ fn extract_descendant_before_replace_parent() {
         .build()
         .unwrap();
     let mut store = MapStore::new();
-    let rewrite = ops
-        .apply(br#"{"a":{"b":"keep"},"other":1}"#, Some(&mut store))
-        .unwrap();
+    let rewrite = ops.apply(br#"{"a":{"b":"keep"},"other":1}"#, Some(&mut store)).unwrap();
     let out = rewrite.output.expect("mutating ops emit a body");
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&out).unwrap(),
@@ -505,9 +498,7 @@ fn extract_root_before_root_replace() {
         .build()
         .unwrap();
     let mut store = MapStore::new();
-    let rewrite = ops
-        .apply(br#"{"model":"old","n":1}"#, Some(&mut store))
-        .unwrap();
+    let rewrite = ops.apply(br#"{"model":"old","n":1}"#, Some(&mut store)).unwrap();
     assert_eq!(rewrite.output.as_deref(), Some(br#"{"replaced":true}"#.as_ref()));
     assert_eq!(
         store.metadata().get("original.root").map(String::as_str),
