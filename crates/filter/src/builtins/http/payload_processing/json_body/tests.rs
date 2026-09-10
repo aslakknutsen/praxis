@@ -354,6 +354,25 @@ async fn invalid_json_reject() {
 }
 
 #[tokio::test]
+async fn invalid_string_escape_reject() {
+    let filter = parse_filter(
+        r#"
+        on_invalid: reject
+        request_remove:
+          - /a
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body = Some(Bytes::from_static(br#"{"a":"\q"}"#));
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(
+        matches!(action, FilterAction::Reject(r) if r.status == 400),
+        "invalid string escape with on_invalid reject"
+    );
+}
+
+#[tokio::test]
 async fn invalid_json_error() {
     let filter = parse_filter(
         r#"

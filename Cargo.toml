@@ -7,6 +7,7 @@ members = [
     # Praxis Proxy Framework
     "crates/core",
     "crates/filter",
+    "crates/json-string-scan",
     "crates/protocol",
     "crates/tls",
 
@@ -83,13 +84,13 @@ quote = "1.0.47"
 praxis = { path = "crates/server", package = "praxis-proxy" }
 praxis-core = { version = "0.5.4", path = "crates/core", package = "praxis-proxy-core" }
 praxis-filter = { version = "0.5.4", path = "crates/filter", package = "praxis-proxy-filter" }
+praxis-json-string-scan = { path = "crates/json-string-scan" }
 praxis-protocol = { version = "0.5.4", path = "crates/protocol", package = "praxis-proxy-protocol" }
 praxis-tls = { version = "0.5.4", path = "crates/tls", package = "praxis-proxy-tls" }
 praxis-test-utils = { path = "tests/utils" }
 secrecy = { version = "0.10.3", features = ["serde"] }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 smallvec = "1.16.0"
-memchr = "2.7.4"
 serde_json = "1.0.151"
 sha2 = "0.11.0"
 subtle = "2.6.1"

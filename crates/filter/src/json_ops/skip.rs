@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Praxis Contributors
 
-//! Fast JSON structural skipping (memchr strings, recursive container walk).
+//! Fast JSON structural skipping (fused string scan, recursive container walk).
 
 use bytes::Bytes;
-use memchr::memchr2;
+use json_string_scan::find_special;
 
 use super::error::{JsonError, MAX_JSON_DEPTH};
 
@@ -93,28 +93,30 @@ pub(super) fn skip_string_with_meta(input: &[u8], i: &mut usize) -> Result<bool,
     expect_byte(input, i, b'"')?;
     let mut escaped = false;
     loop {
-        let tail = input.get(*i..).ok_or(JsonError::InvalidJson)?;
-        let Some(rel_off) = memchr2(b'"', b'\\', tail) else {
-            return Err(JsonError::InvalidJson);
-        };
-        *i += rel_off;
-        let b = *input.get(*i).ok_or(JsonError::InvalidJson)?;
+        let (pos, b) = find_special(input, *i).ok_or(JsonError::InvalidJson)?;
+        *i = pos;
         if b == b'"' {
             *i += 1;
             return Ok(escaped);
         }
+        if b < 0x20 {
+            return Err(JsonError::InvalidJson);
+        }
         escaped = true;
         *i += 1;
-        let esc = next_byte(input, *i)?;
-        *i += 1;
-        if esc == b'u' {
-            for _ in 0..4 {
-                let h = next_byte(input, *i)?;
-                if !h.is_ascii_hexdigit() {
-                    return Err(JsonError::InvalidJson);
-                }
+        match next_byte(input, *i)? {
+            b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => *i += 1,
+            b'u' => {
                 *i += 1;
-            }
+                for _ in 0..4 {
+                    let h = next_byte(input, *i)?;
+                    if !h.is_ascii_hexdigit() {
+                        return Err(JsonError::InvalidJson);
+                    }
+                    *i += 1;
+                }
+            },
+            _ => return Err(JsonError::InvalidJson),
         }
     }
 }
@@ -281,7 +283,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn skip_string_memchr_long_no_escapes() {
+    fn skip_string_long_no_escapes() {
         let payload = format!("\"{}\"", "a".repeat(10_000));
         let input = payload.as_bytes();
         let mut i = 0;
@@ -294,6 +296,57 @@ mod tests {
         let input = br#""a\"b""#;
         let mut i = 0;
         assert!(skip_string_with_meta(input, &mut i).unwrap());
+        assert_eq!(i, input.len());
+    }
+
+    #[test]
+    fn skip_string_accepts_rfc_escapes() {
+        let cases: [&[u8]; 3] = [br#""\/""#, br#""\b\f\n\r\t""#, br#""\u0041""#];
+        for input in cases {
+            let mut i = 0;
+            assert!(skip_string_with_meta(input, &mut i).unwrap());
+            assert_eq!(i, input.len());
+        }
+    }
+
+    #[test]
+    fn skip_string_rejects_invalid_escape() {
+        let input = br#""\q""#;
+        let mut i = 0;
+        assert_eq!(
+            skip_string_with_meta(input, &mut i).unwrap_err(),
+            JsonError::InvalidJson
+        );
+    }
+
+    #[test]
+    fn skip_string_rejects_raw_control() {
+        let input = b"\"a\nb\"";
+        let mut i = 0;
+        assert_eq!(
+            skip_string_with_meta(input, &mut i).unwrap_err(),
+            JsonError::InvalidJson
+        );
+    }
+
+    #[test]
+    fn skip_string_rejects_control_after_scan_chunk() {
+        let mut input = Vec::from(b"\"");
+        input.extend(std::iter::repeat_n(b'a', 32));
+        input.push(0x01);
+        input.push(b'"');
+        let mut i = 0;
+        assert_eq!(
+            skip_string_with_meta(&input, &mut i).unwrap_err(),
+            JsonError::InvalidJson
+        );
+    }
+
+    #[test]
+    fn skip_string_allows_space_and_del() {
+        let input = b"\" \x7f\"";
+        let mut i = 0;
+        assert!(!skip_string_with_meta(input, &mut i).unwrap());
         assert_eq!(i, input.len());
     }
 

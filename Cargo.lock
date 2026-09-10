@@ -3021,6 +3021,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "praxis-json-string-scan"
+version = "0.5.4"
+
+[[package]]
 name = "praxis-policy"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3315,12 +3319,12 @@ dependencies = [
  "dashmap",
  "http",
  "jsonwebtoken",
- "memchr",
  "metrics",
  "metrics-exporter-prometheus",
  "opentelemetry",
  "opentelemetry_sdk",
  "percent-encoding",
+ "praxis-json-string-scan",
  "praxis-policy",
  "praxis-proxy-core",
  "praxis-proxy-tls",

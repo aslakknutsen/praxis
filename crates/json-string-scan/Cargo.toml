@@ -1,0 +1,19 @@
+[package]
+name = "praxis-json-string-scan"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "SIMD JSON string special-byte scanner (forked from nosj find_special)"
+license = "MIT"
+repository.workspace = true
+publish = false
+
+[lib]
+name = "json_string_scan"
+
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
