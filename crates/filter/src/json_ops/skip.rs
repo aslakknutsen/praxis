@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Praxis Contributors
 
-//! Fast JSON structural skipping (memchr strings, recursive container walk).
+//! Fast JSON structural skipping (SIMD string scan, recursive container walk).
 
 use bytes::Bytes;
-use memchr::memchr2;
+use praxis_simd_scan::find_json_string_delim;
 
 use super::error::{JsonError, MAX_JSON_DEPTH};
 
@@ -89,33 +89,53 @@ pub(super) fn expect_byte(input: &[u8], i: &mut usize, expected: u8) -> Result<(
 // -----------------------------------------------------------------------------
 
 /// Skip a JSON string; returns whether escape sequences were present.
+///
+/// Rejects raw control characters (< 0x20) and invalid escape sequences
+/// per RFC 8259 §7.
 pub(super) fn skip_string_with_meta(input: &[u8], i: &mut usize) -> Result<bool, JsonError> {
     expect_byte(input, i, b'"')?;
     let mut escaped = false;
     loop {
         let tail = input.get(*i..).ok_or(JsonError::InvalidJson)?;
-        let Some(rel_off) = memchr2(b'"', b'\\', tail) else {
+        let Some(rel_off) = find_json_string_delim(tail) else {
             return Err(JsonError::InvalidJson);
         };
         *i += rel_off;
-        let b = *input.get(*i).ok_or(JsonError::InvalidJson)?;
-        if b == b'"' {
+        let bb = *input.get(*i).ok_or(JsonError::InvalidJson)?;
+        if bb == b'"' {
             *i += 1;
             return Ok(escaped);
         }
+        if bb < 0x20 {
+            return Err(JsonError::InvalidJson);
+        }
+        // bb must be b'\\' at this point.
         escaped = true;
         *i += 1;
-        let esc = next_byte(input, *i)?;
-        *i += 1;
-        if esc == b'u' {
+        skip_escape_sequence(input, i)?;
+    }
+}
+
+/// Validate and skip one escape sequence after the leading backslash.
+///
+/// RFC 8259 §7 allows: `"`, `\`, `/`, `b`, `f`, `n`, `r`, `t`, and
+/// `uXXXX` (four hex digits). Anything else is invalid.
+fn skip_escape_sequence(input: &[u8], i: &mut usize) -> Result<(), JsonError> {
+    let esc = next_byte(input, *i)?;
+    *i += 1;
+    match esc {
+        b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => Ok(()),
+        b'u' => {
             for _ in 0..4 {
-                let h = next_byte(input, *i)?;
-                if !h.is_ascii_hexdigit() {
+                let hh = next_byte(input, *i)?;
+                if !hh.is_ascii_hexdigit() {
                     return Err(JsonError::InvalidJson);
                 }
                 *i += 1;
             }
-        }
+            Ok(())
+        },
+        _ => Err(JsonError::InvalidJson),
     }
 }
 
@@ -317,5 +337,54 @@ mod tests {
     fn encode_json_string_escapes() {
         let encoded = encode_json_string("te\"nt\n");
         assert_eq!(encoded.as_ref(), br#""te\"nt\n""#);
+    }
+
+    // -----------------------------------------------------------------
+    // Regression: invalid escapes and raw control chars (RFC 8259 §7)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn reject_invalid_escape_backslash_q() {
+        let input = br#""\q""#;
+        let mut i = 0;
+        assert_eq!(
+            skip_string_with_meta(input, &mut i),
+            Err(JsonError::InvalidJson),
+            "\\q is not a valid JSON escape"
+        );
+    }
+
+    #[test]
+    fn reject_raw_control_char_in_string() {
+        let input = b"\"hello\x01world\"";
+        let mut i = 0;
+        assert_eq!(
+            skip_string_with_meta(input, &mut i),
+            Err(JsonError::InvalidJson),
+            "raw control character must be rejected"
+        );
+    }
+
+    #[test]
+    fn reject_raw_null_in_string() {
+        let input = b"\"hello\x00world\"";
+        let mut i = 0;
+        assert_eq!(
+            skip_string_with_meta(input, &mut i),
+            Err(JsonError::InvalidJson),
+            "raw null byte must be rejected"
+        );
+    }
+
+    #[test]
+    fn accept_valid_escape_sequences() {
+        for esc in [r#"\""#, r"\\", r"\/", r"\b", r"\f", r"\n", r"\r", r"\t", r"\u0041"] {
+            let input = format!("\"{esc}\"");
+            let mut i = 0;
+            assert!(
+                skip_string_with_meta(input.as_bytes(), &mut i).is_ok(),
+                "valid escape {esc} should be accepted"
+            );
+        }
     }
 }
