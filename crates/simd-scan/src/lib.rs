@@ -7,13 +7,14 @@
 //! that is a JSON string delimiter: `"` (quote), `\` (backslash), or any
 //! control character (< 0x20).
 //!
-//! On `x86_64` (SSE2) and `aarch64` (NEON) the search is vectorised. All other
+//! On `x86_64` with SSE2 and `aarch64` with NEON enabled at compile time the
+//! search is vectorised (the default for both architectures). All other
 //! targets use a scalar fallback.
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
 mod x86_64;
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
 mod aarch64;
 
 mod generic;
@@ -40,7 +41,7 @@ pub fn find_json_string_delim(haystack: &[u8]) -> Option<usize> {
 
 /// Architecture-specific dispatch. Inlined so the public function
 /// resolves to the right backend at compile time.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
 mod imp {
     /// Delegate to the SSE2 scanner.
     pub(super) fn find(haystack: &[u8]) -> Option<usize> {
@@ -49,7 +50,7 @@ mod imp {
 }
 
 /// Architecture-specific dispatch.
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
 mod imp {
     /// Delegate to the NEON scanner.
     pub(super) fn find(haystack: &[u8]) -> Option<usize> {
@@ -58,7 +59,10 @@ mod imp {
 }
 
 /// Architecture-specific dispatch.
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(not(any(
+    all(target_arch = "x86_64", target_feature = "sse2"),
+    all(target_arch = "aarch64", target_feature = "neon")
+)))]
 mod imp {
     /// Delegate to the scalar fallback.
     pub(super) fn find(haystack: &[u8]) -> Option<usize> {
@@ -211,5 +215,39 @@ mod tests {
     fn first_match_wins() {
         assert_both(b"ab\x01\"cd", Some(2));
         assert_both(b"ab\"\\cd", Some(2));
+    }
+
+    /// Scan sub-slices whose base pointer sits at every offset `0..=17` into
+    /// one heap buffer, so the 16-byte SIMD loads run at every misalignment
+    /// relative to the vector width. Exercises the unaligned-load contract.
+    #[test]
+    fn unaligned_base_pointers() {
+        let mut buf = [b'a'; 200];
+        buf[100] = b'"';
+        buf[150] = 0x07;
+        for start in 0..=17_usize {
+            for end in [start + 15, start + 16, start + 17, start + 33, 120, 199, 200] {
+                let hay = &buf[start..end];
+                let expected = generic::find(hay);
+                assert_eq!(
+                    find_json_string_delim(hay),
+                    expected,
+                    "mismatch for start={start} end={end}"
+                );
+            }
+        }
+    }
+
+    /// Place every byte value in a lane covered by the SIMD path and compare
+    /// against the scalar definition, pinning the vector classification for
+    /// all 256 inputs.
+    #[test]
+    fn every_byte_value_in_simd_lane() {
+        for byte in 0..=u8::MAX {
+            let mut buf = [b'x'; 32];
+            buf[7] = byte;
+            let expected = (byte == b'"' || byte == b'\\' || byte < 0x20).then_some(7);
+            assert_both(&buf, expected);
+        }
     }
 }
