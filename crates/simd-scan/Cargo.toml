@@ -8,7 +8,7 @@ description = "SIMD-accelerated byte scanner for JSON string delimiters"
 license.workspace = true
 repository.workspace = true
 readme = "../../README.md"
-publish = false
+publish = true
 
 # ---------------------------------------------------------------------------
 # Lint configuration
