@@ -501,7 +501,7 @@ fn build_cluster_entry_unreadable_tls_material_fails_closed() {
 
 #[test]
 fn build_strategy_round_robin() {
-    let endpoints = vec![WeightedEndpoint::simple(Arc::from("10.0.0.1:80"), 0, 1)];
+    let endpoints = vec![WeightedEndpoint::simple(Arc::from("10.0.0.1:80"), 1)];
     let strategy = build_strategy(&LoadBalancerStrategy::Simple(SimpleStrategy::RoundRobin), endpoints);
     assert!(
         matches!(strategy.inner(), SharedStrategy::RoundRobin(_)),
@@ -511,7 +511,7 @@ fn build_strategy_round_robin() {
 
 #[test]
 fn build_strategy_least_connections() {
-    let endpoints = vec![WeightedEndpoint::simple(Arc::from("10.0.0.1:80"), 0, 1)];
+    let endpoints = vec![WeightedEndpoint::simple(Arc::from("10.0.0.1:80"), 1)];
     let strategy = build_strategy(
         &LoadBalancerStrategy::Simple(SimpleStrategy::LeastConnections),
         endpoints,
@@ -524,7 +524,7 @@ fn build_strategy_least_connections() {
 
 #[test]
 fn build_strategy_consistent_hash() {
-    let endpoints = vec![WeightedEndpoint::simple(Arc::from("10.0.0.1:80"), 0, 1)];
+    let endpoints = vec![WeightedEndpoint::simple(Arc::from("10.0.0.1:80"), 1)];
     let strategy = build_strategy(
         &LoadBalancerStrategy::Parameterised(ParameterisedStrategy::ConsistentHash(ConsistentHashOpts {
             header: None,

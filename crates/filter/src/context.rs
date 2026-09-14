@@ -431,6 +431,13 @@ pub struct HttpFilterContext<'a> {
     /// only forgoes an optimisation, never an edit.
     pub response_headers_modified: bool,
 
+    /// Whether the upstream was actually contacted for this request
+    /// (Pingora ran `upstream_peer`). `false` when the request was
+    /// rejected or aborted before any upstream connection, so response-
+    /// phase filters (e.g. the circuit breaker) can distinguish a genuine
+    /// upstream failure from a request that never reached the cluster.
+    pub upstream_reached: bool,
+
     /// Index of the selected endpoint in the cluster's
     /// endpoint list. Set by the load balancer filter
     /// for use by passive health checking in the
