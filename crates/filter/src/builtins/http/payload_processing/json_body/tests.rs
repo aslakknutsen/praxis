@@ -1034,3 +1034,45 @@ async fn extract_duplicate_keys_keeps_last() {
     assert_eq!(ctx.get_metadata("a"), Some("2"), "extract last duplicate");
     assert_eq!(body.as_ref().unwrap().as_ref(), br#"{"a":1,"a":2}"#);
 }
+
+// ---------------------------------------------------------------------------
+// Regression: invalid escapes and raw control chars must be rejected
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn invalid_escape_reject() {
+    let filter = parse_filter(
+        r#"
+        on_invalid: reject
+        request_remove:
+          - /a
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body = Some(Bytes::from_static(br#"{"a":"\q"}"#));
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(
+        matches!(&action, FilterAction::Reject(rr) if rr.status == 400),
+        "invalid escape must be rejected"
+    );
+}
+
+#[tokio::test]
+async fn raw_control_char_reject() {
+    let filter = parse_filter(
+        r#"
+        on_invalid: reject
+        request_remove:
+          - /a
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body = Some(Bytes::from(b"{\"a\":\"hello\x01world\"}".to_vec()));
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(
+        matches!(&action, FilterAction::Reject(rr) if rr.status == 400),
+        "raw control character must be rejected"
+    );
+}

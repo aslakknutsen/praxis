@@ -8,6 +8,7 @@ members = [
     "crates/core",
     "crates/filter",
     "crates/protocol",
+    "crates/simd-scan",
     "crates/tls",
 
     # Praxis Developer Tooling
@@ -73,6 +74,7 @@ praxis-core = { version = "0.5.4", path = "crates/core", package = "praxis-proxy
 praxis-filter = { version = "0.5.4", path = "crates/filter", package = "praxis-proxy-filter" }
 praxis-protocol = { version = "0.5.4", path = "crates/protocol", package = "praxis-proxy-protocol" }
 praxis-tls = { version = "0.5.4", path = "crates/tls", package = "praxis-proxy-tls" }
+praxis-simd-scan = { path = "crates/simd-scan" }
 praxis-test-utils = { path = "tests/utils" }
 secrecy = { version = "0.10.3", features = ["serde"] }
 serde = { version = "1.0.229", features = ["derive", "rc"] }

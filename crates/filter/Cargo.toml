@@ -41,11 +41,11 @@ ppe = { workspace = true, optional = true }
 dashmap = { workspace = true }
 http = { workspace = true }
 metrics = { workspace = true }
-memchr = { workspace = true }
 opentelemetry = { workspace = true, optional = true }
 percent-encoding = { workspace = true }
 pingora-core = { workspace = true }
 praxis-core = { workspace = true }
+praxis-simd-scan = { workspace = true }
 praxis-tls = { workspace = true }
 rand = { workspace = true }
 regex = { workspace = true }
