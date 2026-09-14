@@ -3304,7 +3304,6 @@ dependencies = [
  "dashmap",
  "http",
  "jsonwebtoken",
- "memchr",
  "metrics",
  "metrics-exporter-prometheus",
  "opentelemetry",
@@ -3314,6 +3313,7 @@ dependencies = [
  "praxis-policy",
  "praxis-proxy-core",
  "praxis-proxy-tls",
+ "praxis-simd-scan",
  "proptest",
  "quixotic-plecostomus-core",
  "rand 0.10.2",
@@ -3380,6 +3380,10 @@ dependencies = [
  "yaml_serde",
  "zeroize",
 ]
+
+[[package]]
+name = "praxis-simd-scan"
+version = "0.5.5"
 
 [[package]]
 name = "praxis-test-utils"
