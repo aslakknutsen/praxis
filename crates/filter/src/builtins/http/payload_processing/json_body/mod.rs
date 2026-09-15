@@ -26,7 +26,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use tracing::warn;
 
-use self::config::{CompiledOps, JsonBodyConfig, build_ops};
+use self::config::{JsonBodyConfig, build_ops};
 use crate::{
     FilterAction, FilterError, Rejection,
     body::{BodyAccess, BodyMode, DEFAULT_JSON_BODY_MAX_BYTES},
@@ -51,6 +51,10 @@ pub struct JsonBodyOps {
     pub max_body_bytes: usize,
     /// Behavior when the body is not valid JSON.
     pub on_invalid: OnInvalidBehavior,
+    /// Content-Type allowlist. When non-empty, only bodies whose
+    /// `Content-Type` starts with one of these values are processed;
+    /// others pass through unchanged. Empty means all content types.
+    pub content_types: Vec<String>,
 }
 
 impl Default for JsonBodyOps {
@@ -60,6 +64,7 @@ impl Default for JsonBodyOps {
             response: JsonOps::empty(),
             max_body_bytes: DEFAULT_JSON_BODY_MAX_BYTES,
             on_invalid: OnInvalidBehavior::Continue,
+            content_types: Vec::new(),
         }
     }
 }
@@ -109,10 +114,18 @@ impl Default for JsonBodyOps {
 /// transferred byte count matches the committed `Content-Length`.
 /// This achieves redaction, not bandwidth reduction.
 ///
+/// **Content-type gating**: when `content_types` is set, only bodies whose
+/// `Content-Type` matches one of the listed prefixes (case-insensitive) are
+/// processed; non-matching bodies pass through unchanged. When the list is
+/// empty (the default), all content types are processed. The compression
+/// filter has an equivalent knob.
+///
 /// # YAML configuration
 ///
 /// ```yaml
 /// filter: json_body
+/// content_types:
+///   - application/json
 /// request_extract:
 ///   - pointer: /model
 ///     metadata: original.model
@@ -159,6 +172,9 @@ pub struct JsonBodyFilter {
     request_ops: JsonOps,
     /// Compiled response-body operations.
     response_ops: JsonOps,
+    /// Content-Type allowlist (prefix match, case-insensitive).
+    /// Empty means all content types are processed.
+    content_types: Vec<String>,
 }
 
 impl JsonBodyFilter {
@@ -173,12 +189,13 @@ impl JsonBodyFilter {
     /// [`FilterError`]: crate::FilterError
     pub fn from_config(config: &serde_yaml::Value) -> Result<Box<dyn HttpFilter>, FilterError> {
         let cfg: JsonBodyConfig = parse_filter_config("json_body", config)?;
-        let (max_body_bytes, on_invalid, CompiledOps { request, response }) = build_ops(cfg)?;
+        let result = build_ops(cfg)?;
         Self::from_ops(JsonBodyOps {
-            request,
-            response,
-            max_body_bytes,
-            on_invalid,
+            request: result.request,
+            response: result.response,
+            max_body_bytes: result.max_body_bytes,
+            on_invalid: result.on_invalid,
+            content_types: result.content_types,
         })
     }
 
@@ -206,8 +223,31 @@ impl JsonBodyFilter {
             on_invalid: ops.on_invalid,
             request_ops: ops.request,
             response_ops: ops.response,
+            content_types: ops.content_types,
         }))
     }
+
+    /// Returns `true` when `content_type` matches the configured allowlist.
+    ///
+    /// An empty allowlist matches everything. Matching uses case-insensitive
+    /// prefix comparison, following the same convention as the compression
+    /// filter's `content_types` option.
+    fn matches_content_type(&self, content_type: &str) -> bool {
+        if self.content_types.is_empty() {
+            return true;
+        }
+        self.content_types.iter().any(|pattern| {
+            content_type
+                .get(..pattern.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(pattern))
+        })
+    }
+}
+
+/// Per-request state stashed in `on_response` for the response body phase.
+struct ResponseContentTypeMatch {
+    /// `true` when the response `Content-Type` matched the allowlist.
+    matches: bool,
 }
 
 #[async_trait]
@@ -236,6 +276,10 @@ impl HttpFilter for JsonBodyFilter {
         }
     }
 
+    fn needs_request_context(&self) -> bool {
+        !self.content_types.is_empty()
+    }
+
     async fn on_request(&self, _ctx: &mut HttpFilterContext<'_>) -> Result<FilterAction, FilterError> {
         Ok(FilterAction::Continue)
     }
@@ -249,7 +293,34 @@ impl HttpFilter for JsonBodyFilter {
         if !end_of_stream {
             return Ok(FilterAction::Continue);
         }
+        if !self.content_types.is_empty() {
+            let ct = ctx
+                .request
+                .headers
+                .get(http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            if !self.matches_content_type(ct) {
+                return Ok(FilterAction::Continue);
+            }
+        }
         apply_rewrite(&self.request_ops, self.on_invalid, ctx, body, FitMode::Request)
+    }
+
+    async fn on_response(
+        &self,
+        ctx: &mut HttpFilterContext<'_>,
+    ) -> Result<FilterAction, FilterError> {
+        if !self.content_types.is_empty() && !self.response_ops.is_empty() {
+            let matches = ctx
+                .response_header
+                .as_ref()
+                .and_then(|r| r.headers.get(http::header::CONTENT_TYPE))
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|ct| self.matches_content_type(ct));
+            ctx.insert_filter_state(ResponseContentTypeMatch { matches });
+        }
+        Ok(FilterAction::Continue)
     }
 
     fn on_response_body(
@@ -260,6 +331,14 @@ impl HttpFilter for JsonBodyFilter {
     ) -> Result<FilterAction, FilterError> {
         if !end_of_stream {
             return Ok(FilterAction::Continue);
+        }
+        if !self.content_types.is_empty() && !self.response_ops.is_empty() {
+            let matches = ctx
+                .get_filter_state::<ResponseContentTypeMatch>()
+                .is_some_and(|s| s.matches);
+            if !matches {
+                return Ok(FilterAction::Continue);
+            }
         }
         apply_rewrite(&self.response_ops, self.on_invalid, ctx, body, FitMode::Response)
     }

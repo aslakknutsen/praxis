@@ -1116,3 +1116,145 @@ async fn bodyless_request_continues_with_on_invalid_continue() {
     );
     assert!(body.is_none(), "body must remain None");
 }
+
+// -----------------------------------------------------------------------------
+// content_types gating
+// -----------------------------------------------------------------------------
+
+#[test]
+fn content_types_parses() {
+    let filter = parse_filter(
+        r#"
+        content_types:
+          - application/json
+          - text/json
+        request_remove:
+          - /a
+        "#,
+    );
+    assert_eq!(filter.name(), "json_body");
+}
+
+#[tokio::test]
+async fn content_types_matching_request_processes_body() {
+    let filter = parse_filter(
+        r#"
+        content_types:
+          - application/json
+        request_remove:
+          - /secret
+        "#,
+    );
+    let mut req = crate::test_utils::make_request(http::Method::POST, "/");
+    req.headers.insert(http::header::CONTENT_TYPE, "application/json".parse().unwrap());
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body = Some(Bytes::from_static(br#"{"secret":"x","keep":"y"}"#));
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(matches!(action, FilterAction::BodyDone));
+    let got: serde_json::Value = serde_json::from_slice(body.as_ref().unwrap()).unwrap();
+    assert!(got.get("secret").is_none(), "/secret should be removed");
+    assert_eq!(got["keep"], "y");
+}
+
+#[tokio::test]
+async fn content_types_nonmatching_request_passes_through() {
+    let filter = parse_filter(
+        r#"
+        content_types:
+          - application/json
+        request_remove:
+          - /secret
+        "#,
+    );
+    let mut req = crate::test_utils::make_request(http::Method::POST, "/");
+    req.headers.insert(http::header::CONTENT_TYPE, "text/plain".parse().unwrap());
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body = Some(Bytes::from_static(br#"{"secret":"x","keep":"y"}"#));
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(matches!(action, FilterAction::Continue), "non-matching content type must pass through");
+    assert_eq!(
+        body.as_ref().unwrap().as_ref(),
+        br#"{"secret":"x","keep":"y"}"#,
+        "body must be unchanged"
+    );
+}
+
+#[tokio::test]
+async fn content_types_missing_header_passes_through() {
+    let filter = parse_filter(
+        r#"
+        content_types:
+          - application/json
+        request_remove:
+          - /secret
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body = Some(Bytes::from_static(br#"{"secret":"x"}"#));
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(matches!(action, FilterAction::Continue), "missing Content-Type must pass through");
+}
+
+#[tokio::test]
+async fn content_types_case_insensitive_match() {
+    let filter = parse_filter(
+        r#"
+        content_types:
+          - application/json
+        request_remove:
+          - /secret
+        "#,
+    );
+    let mut req = crate::test_utils::make_request(http::Method::POST, "/");
+    req.headers.insert(http::header::CONTENT_TYPE, "Application/JSON; charset=utf-8".parse().unwrap());
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body = Some(Bytes::from_static(br#"{"secret":"x","keep":"y"}"#));
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(matches!(action, FilterAction::BodyDone), "case-insensitive match should process body");
+    let got: serde_json::Value = serde_json::from_slice(body.as_ref().unwrap()).unwrap();
+    assert!(got.get("secret").is_none());
+}
+
+#[tokio::test]
+async fn content_types_empty_list_processes_all() {
+    let filter = parse_filter(
+        r#"
+        content_types: []
+        request_remove:
+          - /secret
+        "#,
+    );
+    let mut req = crate::test_utils::make_request(http::Method::POST, "/");
+    req.headers.insert(http::header::CONTENT_TYPE, "text/plain".parse().unwrap());
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body = Some(Bytes::from_static(br#"{"secret":"x","keep":"y"}"#));
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(matches!(action, FilterAction::BodyDone), "empty content_types list processes all");
+    let got: serde_json::Value = serde_json::from_slice(body.as_ref().unwrap()).unwrap();
+    assert!(got.get("secret").is_none());
+}
+
+#[tokio::test]
+async fn content_types_needs_request_context_when_set() {
+    let filter = parse_filter(
+        r#"
+        content_types:
+          - application/json
+        request_remove:
+          - /a
+        "#,
+    );
+    assert!(filter.needs_request_context(), "must opt-in to request context for content type check");
+}
+
+#[test]
+fn content_types_no_request_context_when_empty() {
+    let filter = parse_filter(
+        r#"
+        request_remove:
+          - /a
+        "#,
+    );
+    assert!(!filter.needs_request_context(), "empty content_types should not need request context");
+}
