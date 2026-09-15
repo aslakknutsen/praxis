@@ -298,7 +298,7 @@ fn apply_rewrite(
     }
 
     let Some(original) = body.as_ref() else {
-        return handle_invalid(on_invalid, "empty body");
+        return Ok(FilterAction::Continue);
     };
     let original_len = original.len();
     let mut store = HttpJsonStore::new(ctx);
