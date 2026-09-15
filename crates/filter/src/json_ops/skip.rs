@@ -301,7 +301,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn skip_string_memchr_long_no_escapes() {
+    fn skip_string_long_no_escapes() {
         let payload = format!("\"{}\"", "a".repeat(10_000));
         let input = payload.as_bytes();
         let mut i = 0;
