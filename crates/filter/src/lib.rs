@@ -435,9 +435,8 @@ mod macro_tests {
 // Test Utilities
 // -----------------------------------------------------------------------------
 
-#[cfg(any(test, feature = "bench-internals"))]
-#[cfg_attr(feature = "bench-internals", allow(dead_code, reason = "only used under cfg(test)"))]
-/// Shared helpers for filter unit tests and `bench-internals` benchmarks.
+#[cfg(test)]
+/// Shared helpers for filter unit tests.
 #[expect(clippy::allow_attributes, reason = "blanket test suppressions")]
 #[allow(clippy::expect_used, reason = "test utilities")]
 pub(crate) mod test_utils {
