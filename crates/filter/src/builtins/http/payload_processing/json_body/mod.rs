@@ -105,7 +105,9 @@ impl Default for JsonBodyOps {
 ///
 /// Response `Content-Length` is already committed when body hooks run.
 /// `response_add` and `response_replace` are rejected at config time.
-/// `response_remove` shrinks are padded with trailing spaces.
+/// `response_remove` shrinks are padded with trailing spaces so the
+/// transferred byte count matches the committed `Content-Length`.
+/// This achieves redaction, not bandwidth reduction.
 ///
 /// # YAML configuration
 ///
@@ -272,7 +274,11 @@ impl HttpFilter for JsonBodyFilter {
 enum FitMode {
     /// Request: length may change; `StreamBuffer` repairs `Content-Length`.
     Request,
-    /// Response: pad on shrink; refuse on grow (config forbids add/replace).
+    /// Response: pad with trailing spaces on shrink to match the committed
+    /// `Content-Length`. The transferred byte count is unchanged — removal
+    /// achieves redaction, not bandwidth savings. Padding is unconditional:
+    /// chunked responses where no committed length exists are also padded.
+    /// Refuse on grow (config forbids add/replace).
     Response,
 }
 
@@ -347,7 +353,10 @@ fn handle_invalid(on_invalid: OnInvalidBehavior, reason: &str) -> Result<FilterA
     }
 }
 
-/// Pad a shorter response to `original_len`; `None` means grow (caller keeps original).
+/// Pad a shorter response to `original_len` so the byte count matches the
+/// already-committed `Content-Length`; `None` means grow (caller keeps
+/// original). Padding is applied unconditionally, including chunked
+/// responses where the downstream has no committed length.
 fn fit_response(original_len: usize, rewritten: Vec<u8>) -> Option<Bytes> {
     match rewritten.len().cmp(&original_len) {
         std::cmp::Ordering::Greater => None,
