@@ -1282,3 +1282,91 @@ fn content_types_no_request_context_when_empty() {
         "empty content_types should not need request context"
     );
 }
+
+#[tokio::test]
+async fn content_types_matching_response_processes_body() {
+    let filter = parse_filter(
+        r#"
+        content_types:
+          - application/json
+        response_remove:
+          - /secret
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::GET, "/");
+    let mut resp = crate::test_utils::make_response();
+    resp.headers
+        .insert(http::header::CONTENT_TYPE, "application/json".parse().unwrap());
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    ctx.response_header = Some(&mut resp);
+    ctx.current_filter_id = Some(0);
+
+    drop(filter.on_response(&mut ctx).await.unwrap());
+
+    let original = br#"{"keep":1,"secret":"x"}"#;
+    let mut body = Some(Bytes::from_static(original));
+    let action = filter.on_response_body(&mut ctx, &mut body, true).unwrap();
+    assert!(matches!(action, FilterAction::BodyDone));
+    let out = body.unwrap();
+    assert!(out.starts_with(br#"{"keep":1}"#), "secret should be removed");
+}
+
+#[tokio::test]
+async fn content_types_nonmatching_response_passes_through() {
+    let filter = parse_filter(
+        r#"
+        content_types:
+          - application/json
+        response_remove:
+          - /secret
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::GET, "/");
+    let mut resp = crate::test_utils::make_response();
+    resp.headers
+        .insert(http::header::CONTENT_TYPE, "text/plain".parse().unwrap());
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    ctx.response_header = Some(&mut resp);
+    ctx.current_filter_id = Some(0);
+
+    drop(filter.on_response(&mut ctx).await.unwrap());
+
+    let original = br#"{"keep":1,"secret":"x"}"#;
+    let mut body = Some(Bytes::from_static(original));
+    let action = filter.on_response_body(&mut ctx, &mut body, true).unwrap();
+    assert!(
+        matches!(action, FilterAction::Continue),
+        "non-matching content type must pass through"
+    );
+    assert_eq!(body.as_ref().unwrap().as_ref(), original, "body unchanged");
+}
+
+#[tokio::test]
+async fn content_types_set_but_response_ops_empty_passes_through() {
+    let filter = parse_filter(
+        r#"
+        content_types:
+          - application/json
+        request_remove:
+          - /secret
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::GET, "/");
+    let mut resp = crate::test_utils::make_response();
+    resp.headers
+        .insert(http::header::CONTENT_TYPE, "application/json".parse().unwrap());
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    ctx.response_header = Some(&mut resp);
+    ctx.current_filter_id = Some(0);
+
+    drop(filter.on_response(&mut ctx).await.unwrap());
+
+    let original = br#"{"keep":1,"secret":"x"}"#;
+    let mut body = Some(Bytes::from_static(original));
+    let action = filter.on_response_body(&mut ctx, &mut body, true).unwrap();
+    assert!(
+        matches!(action, FilterAction::Continue),
+        "empty response ops should not process body"
+    );
+    assert_eq!(body.as_ref().unwrap().as_ref(), original, "body unchanged");
+}

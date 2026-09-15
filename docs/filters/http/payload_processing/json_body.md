@@ -17,7 +17,7 @@ Response `Content-Length` is already committed when body hooks run. `response_ad
 
 **Content-type gating**: when `content_types` is set, only bodies whose `Content-Type` matches one of the listed prefixes (case-insensitive) are processed; non-matching bodies pass through unchanged. When the list is empty (the default), all content types are processed. The compression filter has an equivalent knob.
 
-**Memory usage**: peak heap per concurrent request is approximately 2 × `max_body_bytes` per mutating direction (the `StreamBuffer` input and the rewrite output buffer coexist during the walk). Extract-only directions allocate no output buffer, so their peak is 1 × `max_body_bytes`. Size `max_body_bytes` for the workload, not the default.
+**Memory usage**: peak heap per concurrent request is approximately 2 × `max_body_bytes` per mutating direction (the `StreamBuffer` input and the rewrite output coexist during the walk). Extract-only directions allocate no output buffer, so their peak is 1 × `max_body_bytes`. Size `max_body_bytes` for the workload, not the default.
 
 ## Configuration
 
