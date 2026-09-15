@@ -1076,3 +1076,43 @@ async fn raw_control_char_reject() {
         "raw control character must be rejected"
     );
 }
+
+#[tokio::test]
+async fn bodyless_request_continues_with_on_invalid_reject() {
+    let filter = parse_filter(
+        r#"
+        on_invalid: reject
+        request_remove:
+          - /a
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::GET, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body: Option<Bytes> = None;
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(
+        matches!(action, FilterAction::Continue),
+        "bodyless request must pass through, not be treated as invalid JSON"
+    );
+    assert!(body.is_none(), "body must remain None");
+}
+
+#[tokio::test]
+async fn bodyless_request_continues_with_on_invalid_continue() {
+    let filter = parse_filter(
+        r#"
+        on_invalid: continue
+        request_remove:
+          - /a
+        "#,
+    );
+    let req = crate::test_utils::make_request(http::Method::GET, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    let mut body: Option<Bytes> = None;
+    let action = filter.on_request_body(&mut ctx, &mut body, true).await.unwrap();
+    assert!(
+        matches!(action, FilterAction::Continue),
+        "bodyless request must pass through"
+    );
+    assert!(body.is_none(), "body must remain None");
+}
