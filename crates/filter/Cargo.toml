@@ -15,7 +15,6 @@ name = "praxis_filter"
 
 [features]
 default = []
-bench-internals = []
 policy-engine = [
     "dep:ppe",
 ]
