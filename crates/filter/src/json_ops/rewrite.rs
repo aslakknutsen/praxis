@@ -7,6 +7,10 @@
 //! pre-serialized JSON bytes. Extract captures run in the same walk as
 //! mutating splices; metadata payloads resolve lazily at each splice site.
 //! Subtrees with no remaining op are copied as raw spans (`skip_value` + memcpy).
+//! Objects and arrays containing at least one mutating op are re-emitted
+//! token-by-token; inter-token whitespace is not preserved. Extract-only op
+//! sets skip output entirely (`RewriteOutcome.output` is `None`) and leave
+//! the body byte-identical.
 
 use std::{borrow::Cow, collections::HashMap};
 
