@@ -165,9 +165,7 @@ pub(super) struct BuildResult {
 /// invalid, value sources are missing or duplicated, pointers overlap within
 /// a direction, `response_add` or `response_replace` is set, or
 /// `max_body_bytes` is out of range.
-pub(super) fn build_ops(
-    cfg: JsonBodyConfig,
-) -> Result<BuildResult, FilterError> {
+pub(super) fn build_ops(cfg: JsonBodyConfig) -> Result<BuildResult, FilterError> {
     validate_max_body_bytes("json_body", cfg.max_body_bytes)?;
 
     if !cfg.response_add.is_empty() || !cfg.response_replace.is_empty() {
