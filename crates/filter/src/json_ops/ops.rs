@@ -113,7 +113,7 @@ pub(crate) struct CompiledOpSet {
     /// True when every op is extract (no body rewrite). The rewrite walk
     /// still runs to capture values, but no output buffer is allocated and
     /// the caller's body bytes are untouched — upstream body-signature
-    /// checks (HMAC, SigV4) remain valid.
+    /// checks (HMAC, `SigV4`) remain valid.
     pub extract_only: bool,
 }
 
