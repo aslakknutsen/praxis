@@ -61,6 +61,13 @@ pub(super) struct JsonBodyConfig {
     #[serde(default)]
     pub response_extract: Vec<ExtractOpConfig>,
 
+    /// Content-Type values that qualify for processing. A body whose
+    /// `Content-Type` starts with any entry in this list is processed;
+    /// other content types pass through unchanged. When empty (the default),
+    /// all content types are processed.
+    #[serde(default)]
+    pub content_types: Vec<String>,
+
     /// Maximum body size in bytes for `StreamBuffer` mode.
     #[serde(default = "default_max_body_bytes")]
     pub max_body_bytes: usize,
@@ -136,12 +143,18 @@ fn default_max_body_bytes() -> usize {
     DEFAULT_JSON_BODY_MAX_BYTES
 }
 
-/// Request-side and response-side compiled operations.
-pub(super) struct CompiledOps {
+/// Validated and compiled filter configuration.
+pub(super) struct BuildResult {
     /// Request-body operations.
     pub request: JsonOps,
     /// Response-body operations.
     pub response: JsonOps,
+    /// Maximum body size in bytes.
+    pub max_body_bytes: usize,
+    /// Behavior when the body is not valid JSON.
+    pub on_invalid: OnInvalidBehavior,
+    /// Content-Type allowlist (prefix match).
+    pub content_types: Vec<String>,
 }
 
 /// Validate config and compile pointers through [`JsonOps::builder`](crate::json_ops::JsonOps::builder).
@@ -152,7 +165,9 @@ pub(super) struct CompiledOps {
 /// invalid, value sources are missing or duplicated, pointers overlap within
 /// a direction, `response_add` or `response_replace` is set, or
 /// `max_body_bytes` is out of range.
-pub(super) fn build_ops(cfg: JsonBodyConfig) -> Result<(usize, OnInvalidBehavior, CompiledOps), FilterError> {
+pub(super) fn build_ops(
+    cfg: JsonBodyConfig,
+) -> Result<BuildResult, FilterError> {
     validate_max_body_bytes("json_body", cfg.max_body_bytes)?;
 
     if !cfg.response_add.is_empty() || !cfg.response_replace.is_empty() {
@@ -180,7 +195,13 @@ pub(super) fn build_ops(cfg: JsonBodyConfig) -> Result<(usize, OnInvalidBehavior
         return Err("json_body: at least one add, remove, replace, or extract operation is required".into());
     }
 
-    Ok((cfg.max_body_bytes, cfg.on_invalid, CompiledOps { request, response }))
+    Ok(BuildResult {
+        request,
+        response,
+        max_body_bytes: cfg.max_body_bytes,
+        on_invalid: cfg.on_invalid,
+        content_types: cfg.content_types,
+    })
 }
 
 /// Compile one direction's extract/add/replace/remove lists.
