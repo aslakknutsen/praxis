@@ -68,7 +68,9 @@ pub(super) struct JsonBodyConfig {
     #[serde(default)]
     pub content_types: Vec<String>,
 
-    /// Maximum body size in bytes for `StreamBuffer` mode.
+    /// Maximum body size in bytes for `StreamBuffer` mode. Peak heap is
+    /// ~2× this value per mutating direction (input + output coexist);
+    /// extract-only is ~1×.
     #[serde(default = "default_max_body_bytes")]
     pub max_body_bytes: usize,
 

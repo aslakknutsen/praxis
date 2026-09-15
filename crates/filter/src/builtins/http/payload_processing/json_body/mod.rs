@@ -120,6 +120,12 @@ impl Default for JsonBodyOps {
 /// empty (the default), all content types are processed. The compression
 /// filter has an equivalent knob.
 ///
+/// **Memory usage**: peak heap per concurrent request is approximately
+/// 2 × `max_body_bytes` per mutating direction (the `StreamBuffer` input
+/// and the rewrite output coexist during the walk). Extract-only directions
+/// allocate no output buffer, so their peak is 1 × `max_body_bytes`.
+/// Size `max_body_bytes` for the workload, not the default.
+///
 /// # YAML configuration
 ///
 /// ```yaml
