@@ -11,7 +11,11 @@ Applies mutating operations in one pass over a `StreamBuffer`-held body. Extract
 
 Extract-only directions are `ReadOnly` and defer extract until end of stream so promotion sees the full `StreamBuffer` body. Mixed extract and rewrite uses one walk; metadata-sourced add/replace resolve lazily at each splice site and are skipped when the extract value is not yet available.
 
-Response `Content-Length` is already committed when body hooks run. `response_add` and `response_replace` are rejected at config time. `response_remove` shrinks are padded with trailing spaces.
+**Body signature preservation**: extract-only directions never modify the body bytes, so upstream HMAC or signature checks remain valid. Directions with any mutating op (add, remove, replace) may alter inter-token whitespace even when the op has no runtime effect (e.g., a replace whose target is missing). Callers that need a stable body signature should not combine extract and mutating ops in the same direction; use a separate extract-only `json_body` filter earlier in the pipeline.
+
+Response `Content-Length` is already committed when body hooks run. `response_add` and `response_replace` are rejected at config time. `response_remove` shrinks are padded with trailing spaces so the transferred byte count matches the committed `Content-Length`. This achieves redaction, not bandwidth reduction.
+
+**Content-type gating**: when `content_types` is set, only bodies whose `Content-Type` matches one of the listed prefixes (case-insensitive) are processed; non-matching bodies pass through unchanged. When the list is empty (the default), all content types are processed. The compression filter has an equivalent knob.
 
 ## Configuration
 
@@ -65,6 +69,7 @@ Response `Content-Length` is already committed when body hooks run. `response_ad
 | `response_extract[].structured_metadata.namespace` | string | yes | Structured-metadata namespace. |
 | `response_extract[].structured_metadata.key` | string | yes | Field within the namespace object. |
 | `response_extract[].header` | string | no | Request header to promote the extracted value into. Mutually exclusive with the other destinations. JSON strings are promoted decoded; other values use their source JSON text. Values over 256 bytes or containing control characters are skipped. Not supported on `response_extract`. |
+| `content_types` | string[] | no | Content-Type values that qualify for processing. A body whose `Content-Type` starts with any entry in this list is processed; other content types pass through unchanged. When empty (the default), all content types are processed. |
 | `max_body_bytes` | integer | no | Maximum body size in bytes for `StreamBuffer` mode. |
 | `on_invalid` | `continue` \| `reject` \| `error` | no | Behavior when the body is not valid JSON. |
 
@@ -72,6 +77,8 @@ Response `Content-Length` is already committed when body hooks run. `response_ad
 
 ```yaml
 filter: json_body
+content_types:
+  - application/json
 request_extract:
   - pointer: /model
     metadata: original.model

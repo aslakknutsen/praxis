@@ -307,10 +307,7 @@ impl HttpFilter for JsonBodyFilter {
         apply_rewrite(&self.request_ops, self.on_invalid, ctx, body, FitMode::Request)
     }
 
-    async fn on_response(
-        &self,
-        ctx: &mut HttpFilterContext<'_>,
-    ) -> Result<FilterAction, FilterError> {
+    async fn on_response(&self, ctx: &mut HttpFilterContext<'_>) -> Result<FilterAction, FilterError> {
         if !self.content_types.is_empty() && !self.response_ops.is_empty() {
             let matches = ctx
                 .response_header
