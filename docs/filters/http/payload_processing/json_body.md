@@ -17,6 +17,8 @@ Response `Content-Length` is already committed when body hooks run. `response_ad
 
 **Content-type gating**: when `content_types` is set, only bodies whose `Content-Type` matches one of the listed prefixes (case-insensitive) are processed; non-matching bodies pass through unchanged. When the list is empty (the default), all content types are processed. The compression filter has an equivalent knob.
 
+**Memory usage**: peak heap per concurrent request is approximately 2 × `max_body_bytes` per mutating direction (the `StreamBuffer` input and the rewrite output buffer coexist during the walk). Extract-only directions allocate no output buffer, so their peak is 1 × `max_body_bytes`. Size `max_body_bytes` for the workload, not the default.
+
 ## Configuration
 
 | Field | Type | Required | Description |
@@ -70,7 +72,7 @@ Response `Content-Length` is already committed when body hooks run. `response_ad
 | `response_extract[].structured_metadata.key` | string | yes | Field within the namespace object. |
 | `response_extract[].header` | string | no | Request header to promote the extracted value into. Mutually exclusive with the other destinations. JSON strings are promoted decoded; other values use their source JSON text. Values over 256 bytes or containing control characters are skipped. Not supported on `response_extract`. |
 | `content_types` | string[] | no | Content-Type values that qualify for processing. A body whose `Content-Type` starts with any entry in this list is processed; other content types pass through unchanged. When empty (the default), all content types are processed. |
-| `max_body_bytes` | integer | no | Maximum body size in bytes for `StreamBuffer` mode. |
+| `max_body_bytes` | integer | no | Maximum body size in bytes for `StreamBuffer` mode. Peak heap is ~2× this value per mutating direction (input + output coexist); extract-only is ~1×. |
 | `on_invalid` | `continue` \| `reject` \| `error` | no | Behavior when the body is not valid JSON. |
 
 ## Example
