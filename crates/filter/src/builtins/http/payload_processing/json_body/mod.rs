@@ -95,6 +95,14 @@ impl Default for JsonBodyOps {
 /// walk; metadata-sourced add/replace resolve lazily at each splice site and
 /// are skipped when the extract value is not yet available.
 ///
+/// **Body signature preservation**: extract-only directions never modify the
+/// body bytes, so upstream HMAC or signature checks remain valid. Directions
+/// with any mutating op (add, remove, replace) may alter inter-token whitespace
+/// even when the op has no runtime effect (e.g., a replace whose target is
+/// missing). Callers that need a stable body signature should not combine
+/// extract and mutating ops in the same direction; use a separate extract-only
+/// `json_body` filter earlier in the pipeline.
+///
 /// Response `Content-Length` is already committed when body hooks run.
 /// `response_add` and `response_replace` are rejected at config time.
 /// `response_remove` shrinks are padded with trailing spaces.
