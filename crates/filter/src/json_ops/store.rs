@@ -7,6 +7,10 @@ use std::collections::HashMap;
 
 use crate::HttpFilterContext;
 
+// -----------------------------------------------------------------------------
+// Trait
+// -----------------------------------------------------------------------------
+
 /// Metadata and structured values used as extract destinations and inject sources.
 pub trait JsonOpStore {
     /// Read a metadata string by key.
@@ -24,6 +28,10 @@ pub trait JsonOpStore {
     /// Promote a captured value to a request header.
     fn push_request_header(&mut self, name: String, value: String);
 }
+
+// -----------------------------------------------------------------------------
+// Map Store
+// -----------------------------------------------------------------------------
 
 /// In-memory store for tests, benches, and apply-on-bytes without a request.
 #[derive(Clone, Debug, Default)]
@@ -80,6 +88,10 @@ impl JsonOpStore for MapStore {
         self.request_headers.push((name, value));
     }
 }
+
+// -----------------------------------------------------------------------------
+// HTTP Adapter
+// -----------------------------------------------------------------------------
 
 /// [`JsonOpStore`] adapter over [`HttpFilterContext`].
 ///

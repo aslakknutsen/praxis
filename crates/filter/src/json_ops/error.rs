@@ -3,6 +3,10 @@
 
 //! Errors and limits for JSON Pointer compilation and rewriting.
 
+// -----------------------------------------------------------------------------
+// Constants
+// -----------------------------------------------------------------------------
+
 /// Maximum object/array nesting while rewriting.
 pub(crate) const MAX_JSON_DEPTH: u32 = 128;
 

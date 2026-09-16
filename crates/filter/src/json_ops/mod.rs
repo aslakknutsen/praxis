@@ -50,6 +50,10 @@ mod store;
 )]
 mod tests;
 
+// -----------------------------------------------------------------------------
+// Re-exports
+// -----------------------------------------------------------------------------
+
 pub use builder::{JsonOps, JsonOpsBuilder, JsonRewrite, JsonValue};
 pub use error::JsonError;
 pub use ops::ExtractDest;

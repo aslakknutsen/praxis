@@ -7,6 +7,10 @@ use bytes::Bytes;
 
 use super::index::OpPathIndex;
 
+// -----------------------------------------------------------------------------
+// Op Kind
+// -----------------------------------------------------------------------------
+
 /// Kind of pointer operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OpKind {
@@ -26,6 +30,10 @@ impl OpKind {
         matches!(self, Self::Add | Self::Replace | Self::Remove)
     }
 }
+
+// -----------------------------------------------------------------------------
+// Extract Destination
+// -----------------------------------------------------------------------------
 
 /// Where an extracted JSON span is written.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -68,6 +76,10 @@ impl ExtractDest {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Value Source
+// -----------------------------------------------------------------------------
+
 /// Where an add/replace value comes from at rewrite time.
 #[derive(Clone, Debug)]
 pub(crate) enum ValueSource {
@@ -83,6 +95,10 @@ pub(crate) enum ValueSource {
         key: String,
     },
 }
+
+// -----------------------------------------------------------------------------
+// Compiled Operations
+// -----------------------------------------------------------------------------
 
 /// One compiled pointer operation.
 #[derive(Clone, Debug)]

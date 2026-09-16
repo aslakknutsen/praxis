@@ -14,6 +14,10 @@ use super::{
     store::JsonOpStore,
 };
 
+// -----------------------------------------------------------------------------
+// Value
+// -----------------------------------------------------------------------------
+
 /// Injected value for add/replace.
 #[derive(Clone, Debug)]
 pub struct JsonValue {
@@ -75,12 +79,20 @@ impl JsonValue {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Rewrite Result
+// -----------------------------------------------------------------------------
+
 /// Result of one document walk.
 #[derive(Clone, Debug)]
 pub struct JsonRewrite {
     /// Rewritten bytes; `None` when the op set is extract-only.
     pub output: Option<Vec<u8>>,
 }
+
+// -----------------------------------------------------------------------------
+// Ops
+// -----------------------------------------------------------------------------
 
 /// Compiled pointer operations for one document.
 #[derive(Clone, Debug)]
@@ -135,6 +147,10 @@ impl JsonOps {
         rewrite_document(input, &self.inner, store).map(|RewriteOutcome { output }| JsonRewrite { output })
     }
 }
+
+// -----------------------------------------------------------------------------
+// Builder
+// -----------------------------------------------------------------------------
 
 /// Accumulates pointer operations, then compiles the trie at [`build`](Self::build).
 #[derive(Clone, Debug, Default)]
@@ -247,6 +263,10 @@ impl JsonOpsBuilder {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Utilities
+// -----------------------------------------------------------------------------
+
 /// JSON-quoted last pointer token, used when injecting a missing object member.
 fn encoded_last_object_token(tokens: &[String]) -> Option<Bytes> {
     tokens.last().map(|last| encode_json_string(last))
@@ -322,6 +342,10 @@ fn overlapping_ops(a: &CompiledOp, b: &CompiledOp) -> bool {
         _ => false,
     }
 }
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "tests")]
