@@ -103,11 +103,13 @@ impl FilterPipeline {
     }
 
     /// Create a pipeline from an already-resolved filter list.
+    #[expect(clippy::too_many_lines, reason = "struct literal with many fields")]
     pub(crate) fn from_filters(filters: Vec<PipelineFilter>) -> Self {
         let body_capabilities = compute_body_capabilities(&filters);
         let compression = extract_compression_config(&filters);
         let may_select_streaming_subrequest_response = filters_may_select_streaming_subrequest_response(&filters);
         let (request_body_filter_indices, response_body_filter_indices) = body_filter_indices(&filters);
+        let json_extract_prepass = compile_extract_prepass(&filters, &request_body_filter_indices);
         let id_generator = Arc::new(IdGenerator::new());
         let time_source: Arc<dyn praxis_core::time::TimeSource> = Arc::new(SystemTimeSource);
         let mut pipeline = Self {
@@ -116,6 +118,7 @@ impl FilterPipeline {
             filters,
             request_body_filter_indices,
             response_body_filter_indices,
+            json_extract_prepass,
             allow_private_upstreams: false,
             health_registry: None,
             id_generator: Arc::clone(&id_generator),
@@ -328,4 +331,39 @@ fn filters_may_select_streaming_subrequest_response(filters: &[PipelineFilter]) 
                 .iter()
                 .any(|branch| filters_may_select_streaming_subrequest_response(&branch.filters))
     })
+}
+
+/// Scan consecutive [`ReadOnly`] request-body filters for extract declarations
+/// and compile them into a single pre-pass.
+///
+/// Stops at the first [`ReadWrite`] body filter: its mutations would
+/// invalidate values extracted from the original bytes.
+///
+/// [`ReadOnly`]: crate::body::BodyAccess::ReadOnly
+/// [`ReadWrite`]: crate::body::BodyAccess::ReadWrite
+pub(crate) fn compile_extract_prepass(
+    filters: &[PipelineFilter],
+    request_body_filter_indices: &[usize],
+) -> Option<super::extract_prepass::JsonExtractPrePass> {
+    let mut declarations = Vec::new();
+    for &idx in request_body_filter_indices {
+        let Some(pf) = filters.get(idx) else {
+            continue;
+        };
+        let http_filter = match &pf.filter {
+            AnyFilter::Http(f) => f,
+            AnyFilter::Tcp(_) => continue,
+        };
+        if http_filter.request_body_access() == crate::body::BodyAccess::ReadWrite {
+            break;
+        }
+        declarations.extend(http_filter.json_extract_declarations());
+    }
+    match super::extract_prepass::JsonExtractPrePass::compile(declarations) {
+        Ok(prepass) => prepass,
+        Err(e) => {
+            warn!(error = %e, "json extract pre-pass compilation failed; skipping");
+            None
+        }
+    }
 }

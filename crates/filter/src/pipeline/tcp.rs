@@ -478,6 +478,7 @@ mod tests {
             response_body_ceiling: None,
             request_body_filter_indices: Vec::new(),
             response_body_filter_indices: Vec::new(),
+            json_extract_prepass: None,
             allow_private_upstreams: false,
         }
     }
