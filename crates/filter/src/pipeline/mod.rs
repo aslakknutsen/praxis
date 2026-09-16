@@ -48,6 +48,7 @@ pub(crate) mod introspection;
 /// Sub-request execution for iterative request routing.
 pub(crate) mod subrequest;
 mod tcp;
+pub(crate) mod extract_prepass;
 #[cfg(test)]
 mod test_filters;
 
@@ -173,6 +174,15 @@ pub struct FilterPipeline {
     /// [`execute_http_request`]: FilterPipeline::execute_http_request
     #[cfg(feature = "bound-upstream-request-body")]
     bound_upstream_request_body_filter_indices: Vec<usize>,
+
+    /// Compiled extract-only pre-pass for [`ReadOnly`] request-body filters.
+    ///
+    /// When present, the pipeline runs a single tokenizer walk at body
+    /// EOS before any filter's `on_request_body`, populating metadata
+    /// and headers so participating filters can skip their own JSON parsing.
+    ///
+    /// [`ReadOnly`]: crate::body::BodyAccess::ReadOnly
+    json_extract_prepass: Option<extract_prepass::JsonExtractPrePass>,
 
     /// Whether upstream hostnames may resolve to private or reserved IPs.
     ///

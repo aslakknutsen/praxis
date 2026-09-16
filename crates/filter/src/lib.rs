@@ -140,7 +140,7 @@ pub use factory::{
     EmptyFilterConfig, FilterFactory, HttpFilterFactory, TcpFilterFactory, http_builtin, parse_filter_config,
     tcp_builtin,
 };
-pub use filter::{Filter, FilterContext, FilterError, HttpFilter};
+pub use filter::{Filter, FilterContext, FilterError, HttpFilter, JsonExtractDecl};
 pub use filtered_subrequest::{
     CalloutOutcome, CalloutResponse, FilteredSubrequestExecutor, StagedUpstream, StagedUpstreamFallback,
     SubrequestRuntime,

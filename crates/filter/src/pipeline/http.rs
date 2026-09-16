@@ -325,6 +325,16 @@ impl FilterPipeline {
     ) -> Result<FilterAction, FilterError> {
         ensure_body_done_indices(ctx, self.filters.len());
         accumulate_body_bytes(&mut ctx.request_body_bytes, body.as_ref());
+        // Run the consolidated extract pre-pass once at body EOS, before
+        // any filter's on_request_body. Results land in metadata/headers
+        // so participating filters can skip their own JSON parsing.
+        if end_of_stream && let Some(prepass) = &self.json_extract_prepass {
+            let bytes = body.as_deref().unwrap_or(&[]);
+            let mut store = crate::json_ops::HttpJsonStore::new(ctx);
+            if let Err(e) = prepass.apply(bytes, &mut store) {
+                tracing::debug!(error = %e, "json extract pre-pass failed");
+            }
+        }
         let request_phase_tracked = request_phase_tracked(ctx, self.filters.len());
         let mut released = false;
         // Walk only filters that declared request-body access; declared

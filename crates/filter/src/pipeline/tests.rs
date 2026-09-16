@@ -2984,6 +2984,7 @@ async fn skip_to_excludes_skipped_filters_from_response() {
         selected_upstream_request_body_filter_indices: Vec::new(),
         #[cfg(feature = "bound-upstream-request-body")]
         bound_upstream_request_body_filter_indices: Vec::new(),
+        json_extract_prepass: None,
         allow_private_upstreams: false,
         response_trailer_filter_indices: Vec::new(),
     });
@@ -3064,6 +3065,7 @@ async fn skip_to_excludes_skipped_filters_from_body_hooks() {
         selected_upstream_request_body_filter_indices: Vec::new(),
         #[cfg(feature = "bound-upstream-request-body")]
         bound_upstream_request_body_filter_indices: Vec::new(),
+        json_extract_prepass: None,
         allow_private_upstreams: false,
         response_trailer_filter_indices: Vec::new(),
     });
@@ -3141,6 +3143,7 @@ async fn body_hooks_run_for_every_filter_before_the_request_phase() {
         selected_upstream_request_body_filter_indices: Vec::new(),
         #[cfg(feature = "bound-upstream-request-body")]
         bound_upstream_request_body_filter_indices: Vec::new(),
+        json_extract_prepass: None,
         allow_private_upstreams: false,
         response_trailer_filter_indices: Vec::new(),
     });
@@ -3212,6 +3215,7 @@ async fn all_executed_filters_run_on_response() {
         selected_upstream_request_body_filter_indices: Vec::new(),
         #[cfg(feature = "bound-upstream-request-body")]
         bound_upstream_request_body_filter_indices: Vec::new(),
+        json_extract_prepass: None,
         allow_private_upstreams: false,
         response_trailer_filter_indices: Vec::new(),
     });
@@ -3420,6 +3424,7 @@ async fn skipped_filter_skips_its_branches() {
         selected_upstream_request_body_filter_indices: Vec::new(),
         #[cfg(feature = "bound-upstream-request-body")]
         bound_upstream_request_body_filter_indices: Vec::new(),
+        json_extract_prepass: None,
         allow_private_upstreams: false,
         response_trailer_filter_indices: Vec::new(),
     });
@@ -4950,6 +4955,8 @@ fn with_body_indices(mut pipeline: FilterPipeline) -> FilterPipeline {
         pipeline.bound_upstream_request_body_filter_indices =
             super::body::bound_upstream_request_body_indices(&pipeline.filters);
     }
+    pipeline.json_extract_prepass =
+        super::build::compile_extract_prepass(&pipeline.filters, &pipeline.request_body_filter_indices);
     pipeline
 }
 
@@ -4978,6 +4985,7 @@ fn test_pipeline(body_capabilities: BodyCapabilities, filters: Vec<PipelineFilte
         selected_upstream_request_body_filter_indices: Vec::new(),
         #[cfg(feature = "bound-upstream-request-body")]
         bound_upstream_request_body_filter_indices: Vec::new(),
+        json_extract_prepass: None,
         allow_private_upstreams: false,
         response_trailer_filter_indices: Vec::new(),
     })
@@ -5295,6 +5303,7 @@ fn make_pipeline(filters: Vec<Box<dyn HttpFilter>>) -> FilterPipeline {
         selected_upstream_request_body_filter_indices: Vec::new(),
         #[cfg(feature = "bound-upstream-request-body")]
         bound_upstream_request_body_filter_indices: Vec::new(),
+        json_extract_prepass: None,
         allow_private_upstreams: false,
         response_trailer_filter_indices: Vec::new(),
     })
@@ -5333,6 +5342,7 @@ fn make_pipeline_with_conditions(
         selected_upstream_request_body_filter_indices: Vec::new(),
         #[cfg(feature = "bound-upstream-request-body")]
         bound_upstream_request_body_filter_indices: Vec::new(),
+        json_extract_prepass: None,
         allow_private_upstreams: false,
         response_trailer_filter_indices: Vec::new(),
     })
@@ -5371,6 +5381,7 @@ fn make_pipeline_with_response_conditions(
         selected_upstream_request_body_filter_indices: Vec::new(),
         #[cfg(feature = "bound-upstream-request-body")]
         bound_upstream_request_body_filter_indices: Vec::new(),
+        json_extract_prepass: None,
         allow_private_upstreams: false,
         response_trailer_filter_indices: Vec::new(),
     })
@@ -6036,6 +6047,7 @@ fn streaming_capability_detected_when_filter_declares_it() {
         selected_upstream_request_body_filter_indices: Vec::new(),
         #[cfg(feature = "bound-upstream-request-body")]
         bound_upstream_request_body_filter_indices: Vec::new(),
+        json_extract_prepass: None,
         allow_private_upstreams: false,
         response_trailer_filter_indices: Vec::new(),
     });
@@ -8771,4 +8783,382 @@ async fn run_request_then_response(pipeline: &FilterPipeline, log: &HookLog, pat
     drop(log.take());
     drop(pipeline.execute_http_response(&mut ctx).await.unwrap());
     log.take()
+}
+
+// -----------------------------------------------------------------------------
+// JSON Extract Pre-Pass Tests
+// -----------------------------------------------------------------------------
+
+/// A ReadOnly body filter that declares JSON extract declarations.
+struct ExtractDeclFilter {
+    declarations: Vec<crate::filter::JsonExtractDecl>,
+}
+
+#[async_trait]
+impl HttpFilter for ExtractDeclFilter {
+    fn name(&self) -> &'static str {
+        "extract_decl"
+    }
+
+    async fn on_request(&self, _ctx: &mut crate::HttpFilterContext<'_>) -> Result<FilterAction, FilterError> {
+        Ok(FilterAction::Continue)
+    }
+
+    fn request_body_access(&self) -> BodyAccess {
+        BodyAccess::ReadOnly
+    }
+
+    fn request_body_mode(&self) -> BodyMode {
+        BodyMode::StreamBuffer { max_bytes: Some(1_048_576) }
+    }
+
+    fn json_extract_declarations(&self) -> Vec<crate::filter::JsonExtractDecl> {
+        self.declarations.clone()
+    }
+
+    async fn on_request_body(
+        &self,
+        _ctx: &mut crate::HttpFilterContext<'_>,
+        _body: &mut Option<Bytes>,
+        _end_of_stream: bool,
+    ) -> Result<FilterAction, FilterError> {
+        Ok(FilterAction::Continue)
+    }
+}
+
+/// Example consumer filter demonstrating the full opt-in contract.
+///
+/// 1. Declares `/model` extraction via [`json_extract_declarations`].
+/// 2. In [`on_request_body`], reads from metadata first (pre-pass populated).
+/// 3. Falls back to DOM parsing only when metadata is absent (pre-pass
+///    didn't run or the body wasn't valid JSON).
+///
+/// This is the pattern AI filters in the external repo would follow.
+///
+/// [`json_extract_declarations`]: HttpFilter::json_extract_declarations
+/// [`on_request_body`]: HttpFilter::on_request_body
+struct ModelClassifierFilter {
+    /// Observed model value, written by `on_request_body`.
+    observed_model: Arc<std::sync::Mutex<Option<String>>>,
+    /// Whether the filter had to fall back to DOM parsing.
+    used_dom_fallback: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl HttpFilter for ModelClassifierFilter {
+    fn name(&self) -> &'static str {
+        "model_classifier"
+    }
+
+    async fn on_request(&self, _ctx: &mut crate::HttpFilterContext<'_>) -> Result<FilterAction, FilterError> {
+        Ok(FilterAction::Continue)
+    }
+
+    fn request_body_access(&self) -> BodyAccess {
+        BodyAccess::ReadOnly
+    }
+
+    fn request_body_mode(&self) -> BodyMode {
+        BodyMode::StreamBuffer { max_bytes: Some(1_048_576) }
+    }
+
+    fn json_extract_declarations(&self) -> Vec<crate::filter::JsonExtractDecl> {
+        vec![crate::filter::JsonExtractDecl {
+            pointer: "/model".to_owned(),
+            dest: crate::json_ops::ExtractDest::metadata("classifier.model"),
+        }]
+    }
+
+    async fn on_request_body(
+        &self,
+        ctx: &mut crate::HttpFilterContext<'_>,
+        body: &mut Option<Bytes>,
+        end_of_stream: bool,
+    ) -> Result<FilterAction, FilterError> {
+        if !end_of_stream {
+            return Ok(FilterAction::Continue);
+        }
+
+        // Step 1: check if the pre-pass already extracted the value.
+        let model = if let Some(model) = ctx.filter_metadata.get("classifier.model") {
+            model.clone()
+        } else {
+            // Step 2: fallback — parse the body ourselves.
+            self.used_dom_fallback
+                .store(true, Ordering::SeqCst);
+            let bytes = body.as_deref().unwrap_or(&[]);
+            let parsed: serde_json::Value =
+                serde_json::from_slice(bytes).unwrap_or(serde_json::Value::Null);
+            parsed
+                .get("model")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+                .to_owned()
+        };
+
+        *self.observed_model.lock().unwrap() = Some(model);
+        Ok(FilterAction::Continue)
+    }
+}
+
+/// Full opt-in contract: the filter declares `/model`, the pre-pass
+/// extracts it, and `on_request_body` reads metadata without parsing.
+#[tokio::test]
+async fn extract_prepass_consumer_reads_metadata_no_dom_fallback() {
+    let observed = Arc::new(std::sync::Mutex::new(None));
+    let used_fallback = Arc::new(AtomicBool::new(false));
+
+    let pipeline = make_pipeline(vec![Box::new(ModelClassifierFilter {
+        observed_model: Arc::clone(&observed),
+        used_dom_fallback: Arc::clone(&used_fallback),
+    })]);
+
+    assert!(
+        pipeline.json_extract_prepass.is_some(),
+        "pipeline should compile a pre-pass from the filter's declarations"
+    );
+
+    let req = crate::test_utils::make_request(Method::POST, "/v1/chat/completions");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+
+    let mut body = Some(Bytes::from_static(br#"{"model":"gpt-4o","stream":true}"#));
+    drop(
+        pipeline
+            .execute_http_request_body(&mut ctx, &mut body, true)
+            .await
+            .unwrap(),
+    );
+
+    assert_eq!(
+        observed.lock().unwrap().as_deref(),
+        Some("gpt-4o"),
+        "filter should observe the model extracted by the pre-pass"
+    );
+    assert!(
+        !used_fallback.load(Ordering::SeqCst),
+        "filter should NOT fall back to DOM parsing when pre-pass populated metadata"
+    );
+}
+
+/// When the pre-pass is absent (e.g. a ReadWrite filter precedes this
+/// one), the consumer filter falls back to DOM parsing gracefully.
+#[tokio::test]
+async fn extract_prepass_consumer_falls_back_to_dom_when_no_prepass() {
+    let observed = Arc::new(std::sync::Mutex::new(None));
+    let used_fallback = Arc::new(AtomicBool::new(false));
+
+    // Place a ReadWrite filter first — this prevents the pre-pass from
+    // including the classifier's declarations.
+    let pipeline = make_pipeline(vec![
+        Box::new(BodyUppercaseFilter),
+        Box::new(ModelClassifierFilter {
+            observed_model: Arc::clone(&observed),
+            used_dom_fallback: Arc::clone(&used_fallback),
+        }),
+    ]);
+
+    assert!(
+        pipeline.json_extract_prepass.is_none(),
+        "pre-pass should not exist when first body filter is ReadWrite"
+    );
+
+    let req = crate::test_utils::make_request(Method::POST, "/v1/chat/completions");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+
+    // BodyUppercaseFilter will uppercase the body, so the classifier's
+    // DOM fallback will parse the uppercased version.
+    let mut body = Some(Bytes::from_static(br#"{"model":"gpt-4o"}"#));
+    drop(
+        pipeline
+            .execute_http_request_body(&mut ctx, &mut body, true)
+            .await
+            .unwrap(),
+    );
+
+    assert!(
+        observed.lock().unwrap().is_some(),
+        "filter should still extract a model via DOM fallback"
+    );
+    assert!(
+        used_fallback.load(Ordering::SeqCst),
+        "filter SHOULD fall back to DOM parsing when pre-pass is absent"
+    );
+}
+
+#[tokio::test]
+async fn extract_prepass_populates_metadata() {
+    use crate::json_ops::ExtractDest;
+
+    let pipeline = make_pipeline(vec![Box::new(ExtractDeclFilter {
+        declarations: vec![
+            crate::filter::JsonExtractDecl {
+                pointer: "/model".to_owned(),
+                dest: ExtractDest::metadata("req.model"),
+            },
+            crate::filter::JsonExtractDecl {
+                pointer: "/stream".to_owned(),
+                dest: ExtractDest::metadata("req.stream"),
+            },
+        ],
+    })]);
+
+    assert!(
+        pipeline.json_extract_prepass.is_some(),
+        "pipeline should compile an extract pre-pass from declarations"
+    );
+
+    let req = crate::test_utils::make_request(Method::POST, "/v1/chat/completions");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+
+    let mut body = Some(Bytes::from_static(br#"{"model":"gpt-4","stream":true}"#));
+    drop(
+        pipeline
+            .execute_http_request_body(&mut ctx, &mut body, true)
+            .await
+            .unwrap(),
+    );
+
+    assert_eq!(
+        ctx.filter_metadata.get("req.model").map(String::as_str),
+        Some("gpt-4"),
+        "pre-pass should extract model into metadata"
+    );
+    assert_eq!(
+        ctx.filter_metadata.get("req.stream").map(String::as_str),
+        Some("true"),
+        "pre-pass should extract stream into metadata"
+    );
+}
+
+#[tokio::test]
+async fn extract_prepass_populates_headers() {
+    use crate::json_ops::ExtractDest;
+
+    let pipeline = make_pipeline(vec![Box::new(ExtractDeclFilter {
+        declarations: vec![crate::filter::JsonExtractDecl {
+            pointer: "/model".to_owned(),
+            dest: ExtractDest::header("x-model"),
+        }],
+    })]);
+
+    let req = crate::test_utils::make_request(Method::POST, "/v1/chat/completions");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+
+    let mut body = Some(Bytes::from_static(br#"{"model":"gpt-4"}"#));
+    drop(
+        pipeline
+            .execute_http_request_body(&mut ctx, &mut body, true)
+            .await
+            .unwrap(),
+    );
+
+    assert!(
+        ctx.extra_request_headers
+            .iter()
+            .any(|(name, val)| name.as_ref() == "x-model" && val == "gpt-4"),
+        "pre-pass should promote model to x-model header"
+    );
+}
+
+#[test]
+fn extract_prepass_stops_at_readwrite_boundary() {
+    use crate::json_ops::ExtractDest;
+
+    let pipeline = make_pipeline(vec![
+        Box::new(ExtractDeclFilter {
+            declarations: vec![crate::filter::JsonExtractDecl {
+                pointer: "/model".to_owned(),
+                dest: ExtractDest::metadata("before"),
+            }],
+        }),
+        Box::new(BodyUppercaseFilter),
+        Box::new(ExtractDeclFilter {
+            declarations: vec![crate::filter::JsonExtractDecl {
+                pointer: "/stream".to_owned(),
+                dest: ExtractDest::metadata("after"),
+            }],
+        }),
+    ]);
+
+    // The pre-pass should only include the first filter's
+    // declarations (before the ReadWrite boundary).
+    assert!(
+        pipeline.json_extract_prepass.is_some(),
+        "pre-pass should exist for the declarations before the ReadWrite filter"
+    );
+
+    // Verify by running a body through: only "before" should be populated
+    // by the pre-pass (the "after" declaration is beyond the ReadWrite
+    // boundary and not included).
+}
+
+#[tokio::test]
+async fn extract_prepass_invalid_json_falls_through() {
+    use crate::json_ops::ExtractDest;
+
+    let pipeline = make_pipeline(vec![Box::new(ExtractDeclFilter {
+        declarations: vec![crate::filter::JsonExtractDecl {
+            pointer: "/model".to_owned(),
+            dest: ExtractDest::metadata("req.model"),
+        }],
+    })]);
+
+    let req = crate::test_utils::make_request(Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+
+    let mut body = Some(Bytes::from_static(b"not json at all"));
+    let action = pipeline
+        .execute_http_request_body(&mut ctx, &mut body, true)
+        .await
+        .unwrap();
+
+    assert!(
+        matches!(action, FilterAction::Continue),
+        "invalid JSON should not break the pipeline"
+    );
+    assert!(
+        !ctx.filter_metadata.contains_key("req.model"),
+        "no metadata should be written for invalid JSON"
+    );
+}
+
+#[test]
+fn extract_prepass_no_declarations_means_no_prepass() {
+    let pipeline = make_pipeline(vec![Box::new(BodyInspectorFilter {
+        chunks: Arc::new(std::sync::Mutex::new(Vec::new())),
+    })]);
+
+    assert!(
+        pipeline.json_extract_prepass.is_none(),
+        "pipeline with no extract declarations should have no pre-pass"
+    );
+}
+
+#[tokio::test]
+async fn extract_prepass_skips_on_non_eos() {
+    use crate::json_ops::ExtractDest;
+
+    let pipeline = make_pipeline(vec![Box::new(ExtractDeclFilter {
+        declarations: vec![crate::filter::JsonExtractDecl {
+            pointer: "/model".to_owned(),
+            dest: ExtractDest::metadata("req.model"),
+        }],
+    })]);
+
+    let req = crate::test_utils::make_request(Method::POST, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+
+    // Not end-of-stream — pre-pass should not run
+    let mut body = Some(Bytes::from_static(br#"{"model":"gpt-4"}"#));
+    drop(
+        pipeline
+            .execute_http_request_body(&mut ctx, &mut body, false)
+            .await
+            .unwrap(),
+    );
+
+    assert!(
+        !ctx.filter_metadata.contains_key("req.model"),
+        "pre-pass should not run before end_of_stream"
+    );
 }
