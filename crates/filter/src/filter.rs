@@ -14,8 +14,40 @@ use crate::{
     actions::{FilterAction, SelectedUpstreamBodyOutcome},
     body::{BodyAccess, BodyMode},
     builtins::http::payload_processing::compression_config::CompressionConfig,
+    json_ops::ExtractDest,
     pipeline::FilterPipeline,
 };
+
+// -----------------------------------------------------------------------------
+// JSON Extract Declarations
+// -----------------------------------------------------------------------------
+
+/// A single JSON pointer extraction declaration for the pipeline pre-pass.
+///
+/// Filters that only need to read a few fields from the request body
+/// can declare their extractions here instead of parsing the body
+/// themselves. The pipeline collects declarations from consecutive
+/// [`BodyAccess::ReadOnly`] filters and runs them in a single
+/// tokenizer walk before any filter's [`HttpFilter::on_request_body`].
+///
+/// ```
+/// use praxis_filter::JsonExtractDecl;
+/// use praxis_filter::json_ops::ExtractDest;
+///
+/// let decl = JsonExtractDecl {
+///     pointer: "/model".to_owned(),
+///     dest: ExtractDest::metadata("classifier.model"),
+/// };
+/// ```
+#[derive(Clone, Debug)]
+pub struct JsonExtractDecl {
+    /// RFC 6901 JSON Pointer identifying the value to extract
+    /// (e.g. `"/model"`, `"/stream"`).
+    pub pointer: String,
+    /// Where to write the extracted value — metadata, structured
+    /// metadata, or a request header.
+    pub dest: ExtractDest,
+}
 
 // -----------------------------------------------------------------------------
 // Backward-compatible Aliases
@@ -150,6 +182,87 @@ pub trait HttpFilter: Send + Sync {
     /// [`TERMINAL_FILTERS`]: praxis_core::config::TERMINAL_FILTERS
     fn produces_terminal_response(&self) -> bool {
         false
+    }
+
+    /// JSON pointer extractions this filter needs from the request body.
+    ///
+    /// Override this to declare fields the pipeline should extract in a
+    /// single tokenizer pre-pass before [`on_request_body`] runs. Only
+    /// honoured for filters with [`BodyAccess::ReadOnly`]; the pipeline
+    /// stops collecting at the first [`BodyAccess::ReadWrite`] filter.
+    ///
+    /// Filters that declare extractions should check metadata first in
+    /// [`on_request_body`] and skip their own parsing when the values
+    /// are already present.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use async_trait::async_trait;
+    /// use bytes::Bytes;
+    /// use praxis_filter::{
+    ///     FilterAction, FilterError, HttpFilter, HttpFilterContext,
+    ///     JsonExtractDecl,
+    ///     body::{BodyAccess, BodyMode},
+    ///     json_ops::ExtractDest,
+    /// };
+    ///
+    /// struct ModelClassifier;
+    ///
+    /// #[async_trait]
+    /// impl HttpFilter for ModelClassifier {
+    ///     fn name(&self) -> &'static str { "model_classifier" }
+    ///
+    ///     async fn on_request(
+    ///         &self, _ctx: &mut HttpFilterContext<'_>,
+    ///     ) -> Result<FilterAction, FilterError> {
+    ///         Ok(FilterAction::Continue)
+    ///     }
+    ///
+    ///     fn request_body_access(&self) -> BodyAccess { BodyAccess::ReadOnly }
+    ///     fn request_body_mode(&self) -> BodyMode {
+    ///         BodyMode::StreamBuffer { max_bytes: Some(1_048_576) }
+    ///     }
+    ///
+    ///     // Step 1: declare what to extract.
+    ///     fn json_extract_declarations(&self) -> Vec<JsonExtractDecl> {
+    ///         vec![JsonExtractDecl {
+    ///             pointer: "/model".to_owned(),
+    ///             dest: ExtractDest::metadata("classifier.model"),
+    ///         }]
+    ///     }
+    ///
+    ///     // Step 2: read metadata first, fall back to DOM parsing.
+    ///     async fn on_request_body(
+    ///         &self,
+    ///         ctx: &mut HttpFilterContext<'_>,
+    ///         body: &mut Option<Bytes>,
+    ///         end_of_stream: bool,
+    ///     ) -> Result<FilterAction, FilterError> {
+    ///         if !end_of_stream { return Ok(FilterAction::Continue); }
+    ///
+    ///         let model = if let Some(m) = ctx.filter_metadata.get("classifier.model") {
+    ///             m.clone() // pre-pass populated it — no parsing needed
+    ///         } else {
+    ///             // fallback: pre-pass absent or body wasn't JSON
+    ///             let bytes = body.as_deref().unwrap_or(&[]);
+    ///             serde_json::from_slice::<serde_json::Value>(bytes)
+    ///                 .ok()
+    ///                 .and_then(|v| v.get("model")?.as_str().map(str::to_owned))
+    ///                 .unwrap_or_else(|| "unknown".to_owned())
+    ///         };
+    ///
+    ///         ctx.set_metadata("resolved.model", model);
+    ///         Ok(FilterAction::Continue)
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// [`on_request_body`]: HttpFilter::on_request_body
+    /// [`BodyAccess::ReadOnly`]: crate::body::BodyAccess::ReadOnly
+    /// [`BodyAccess::ReadWrite`]: crate::body::BodyAccess::ReadWrite
+    fn json_extract_declarations(&self) -> Vec<JsonExtractDecl> {
+        Vec::new()
     }
 
     /// Visit pipelines owned by this filter.
@@ -554,6 +667,15 @@ mod tests {
         assert!(
             !filter.may_select_streaming_subrequest_response(),
             "filters must opt in to streaming selection"
+        );
+    }
+
+    #[test]
+    fn default_json_extract_declarations_is_empty() {
+        let filter = MinimalFilter;
+        assert!(
+            filter.json_extract_declarations().is_empty(),
+            "a filter with no extract needs must declare nothing"
         );
     }
 
