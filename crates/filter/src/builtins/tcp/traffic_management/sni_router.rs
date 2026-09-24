@@ -20,12 +20,10 @@
 //! default_upstream: "10.0.0.3:443"
 //! ```
 
-use std::{
-    borrow::Cow,
-    collections::{HashMap, HashSet},
-};
+use std::borrow::Cow;
 
 use async_trait::async_trait;
+use praxis_tls::{SniMatcher, SniMatcherError, SniNameError, WildcardMatch};
 use serde::Deserialize;
 use tracing::{debug, trace};
 
@@ -77,11 +75,8 @@ pub struct SniRouterFilter {
     /// Fallback upstream when no route matches.
     default_upstream: Option<String>,
 
-    /// Exact hostname to upstream mapping (lowercased keys).
-    exact: HashMap<String, String>,
-
-    /// Wildcard suffix patterns sorted by length (longest first).
-    wildcards: Vec<WildcardRoute>,
+    /// SNI-to-upstream matcher, using suffix wildcard semantics.
+    matcher: SniMatcher<String>,
 }
 
 impl SniRouterFilter {
@@ -100,20 +95,14 @@ impl SniRouterFilter {
     }
 
     /// Resolve a hostname to an upstream address.
+    ///
+    /// Delegates exact and suffix wildcard matching to the shared
+    /// [`SniMatcher`]; falls back to `default_upstream` when no route matches.
     fn resolve(&self, hostname: &str) -> Option<&str> {
-        let lower = hostname.trim_end_matches('.').to_ascii_lowercase();
-
-        if let Some(upstream) = self.exact.get(&lower) {
-            return Some(upstream.as_str());
-        }
-
-        for wc in &self.wildcards {
-            if lower.len() > wc.suffix.len() && lower.ends_with(wc.suffix.as_str()) {
-                return Some(wc.upstream.as_str());
-            }
-        }
-
-        self.default_upstream.as_deref()
+        self.matcher
+            .lookup(hostname)
+            .map(String::as_str)
+            .or(self.default_upstream.as_deref())
     }
 }
 
@@ -148,19 +137,6 @@ impl TcpFilter for SniRouterFilter {
 }
 
 // -----------------------------------------------------------------------------
-// WildcardRoute
-// -----------------------------------------------------------------------------
-
-/// A wildcard SNI route (e.g. `*.example.com`).
-struct WildcardRoute {
-    /// The suffix to match against (e.g. `.example.com`), lowercased.
-    suffix: String,
-
-    /// Upstream address for matching connections.
-    upstream: String,
-}
-
-// -----------------------------------------------------------------------------
 // Config Types
 // -----------------------------------------------------------------------------
 
@@ -192,75 +168,53 @@ struct SniRouteEntry {
 // -----------------------------------------------------------------------------
 
 /// Build the filter from validated config.
+///
+/// Flattens every `(server_name, upstream)` pair into a suffix-matching
+/// [`SniMatcher`], which validates patterns and rejects duplicates. Routing
+/// uses [`WildcardMatch::Suffix`], so `*.example.com` matches multiple label
+/// depths and `*.com` is permitted.
 fn build_filter(cfg: SniRouterConfig) -> Result<Box<dyn TcpFilter>, FilterError> {
     if cfg.routes.is_empty() && cfg.default_upstream.is_none() {
         return Err("sni_router: at least one route or a default_upstream is required".into());
     }
 
-    let mut tables = RouteTables::default();
+    let mut entries: Vec<(String, String)> = Vec::new();
     for entry in &cfg.routes {
-        validate_route_entry(entry, &mut tables)?;
+        if entry.server_names.is_empty() {
+            return Err("sni_router: route entry has empty server_names list".into());
+        }
+        for name in &entry.server_names {
+            entries.push((name.clone(), entry.upstream.clone()));
+        }
     }
-    tables.wildcards.sort_by_key(|b| std::cmp::Reverse(b.suffix.len()));
+
+    let matcher = SniMatcher::build(entries, WildcardMatch::Suffix).map_err(map_build_error)?;
 
     Ok(Box::new(SniRouterFilter {
         default_upstream: cfg.default_upstream,
-        exact: tables.exact,
-        wildcards: tables.wildcards,
+        matcher,
     }))
 }
 
-/// Accumulated routes identified during construction.
-#[derive(Default)]
-struct RouteTables {
-    /// Exact hostname to upstream mapping.
-    exact: HashMap<String, String>,
-
-    /// Wildcard suffix patterns.
-    wildcards: Vec<WildcardRoute>,
-
-    /// Seen wildcard suffixes for duplicate detection.
-    seen_wildcards: HashSet<String>,
-}
-
-/// Validate a single route entry and insert into the tables.
-fn validate_route_entry(entry: &SniRouteEntry, tables: &mut RouteTables) -> Result<(), FilterError> {
-    if entry.server_names.is_empty() {
-        return Err("sni_router: route entry has empty server_names list".into());
-    }
-
-    for raw_name in &entry.server_names {
-        validate_sni_name(raw_name)?;
-        let name = raw_name.trim_end_matches('.');
-
-        if let Some(suffix) = name.strip_prefix('*') {
-            let lower = suffix.to_ascii_lowercase();
-            if !tables.seen_wildcards.insert(lower.clone()) {
-                return Err(format!("sni_router: duplicate wildcard pattern '*{lower}'").into());
+/// Translate a matcher build failure into an `sni_router`-prefixed error,
+/// preserving the filter's original messages for bare wildcards and duplicates.
+fn map_build_error(err: SniMatcherError) -> FilterError {
+    match err {
+        SniMatcherError::DuplicatePattern { pattern } => {
+            let lower = pattern.to_ascii_lowercase();
+            if let Some(suffix) = lower.strip_prefix('*') {
+                format!("sni_router: duplicate wildcard pattern '*{suffix}'").into()
+            } else {
+                format!("sni_router: duplicate server name '{lower}'").into()
             }
-            tables.wildcards.push(WildcardRoute {
-                suffix: lower,
-                upstream: entry.upstream.clone(),
-            });
-        } else {
-            let lower = name.to_ascii_lowercase();
-            if tables.exact.contains_key(&lower) {
-                return Err(format!("sni_router: duplicate server name '{lower}'").into());
-            }
-            tables.exact.insert(lower, entry.upstream.clone());
-        }
-    }
-    Ok(())
-}
-
-/// Validate an SNI server name, mapping bare wildcards to an actionable error.
-fn validate_sni_name(name: &str) -> Result<(), FilterError> {
-    praxis_tls::validate_sni_name(name).map_err(|e| match e {
-        praxis_tls::SniNameError::BareWildcard => {
-            "sni_router: bare wildcard '*' is not allowed; use default_upstream instead".into()
         },
-        _ => format!("sni_router: server name '{name}' {e}").into(),
-    })
+        SniMatcherError::InvalidPattern { pattern, source } => match source {
+            SniNameError::BareWildcard => {
+                "sni_router: bare wildcard '*' is not allowed; use default_upstream instead".into()
+            },
+            _ => format!("sni_router: server name '{pattern}' {source}").into(),
+        },
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -694,35 +648,24 @@ default_upstream: "10.0.0.1:443"
     }
 
     /// Build an [`SniRouterFilter`] from exact entries, wildcard entries, and optional default.
+    ///
+    /// Goes through the real suffix-matching [`SniMatcher`], so tests exercise
+    /// the same build path as production (including policy wiring).
     fn make_filter(
         exact_entries: &[(&str, &str)],
         wildcard_entries: &[(&str, &str)],
         default: Option<&str>,
     ) -> SniRouterFilter {
-        let mut exact = HashMap::new();
-        let mut wildcards = Vec::new();
-
-        for (name, upstream) in exact_entries {
-            exact.insert(name.to_ascii_lowercase(), (*upstream).to_owned());
-        }
-
-        for (pattern, upstream) in wildcard_entries {
-            let suffix = pattern
-                .strip_prefix('*')
-                .expect("wildcard should start with *")
-                .to_ascii_lowercase();
-            wildcards.push(WildcardRoute {
-                suffix,
-                upstream: (*upstream).to_owned(),
-            });
-        }
-
-        wildcards.sort_by_key(|b| std::cmp::Reverse(b.suffix.len()));
+        let entries: Vec<(String, String)> = exact_entries
+            .iter()
+            .chain(wildcard_entries)
+            .map(|(pattern, upstream)| ((*pattern).to_owned(), (*upstream).to_owned()))
+            .collect();
+        let matcher = SniMatcher::build(entries, WildcardMatch::Suffix).expect("test routes should build");
 
         SniRouterFilter {
             default_upstream: default.map(|s| s.to_owned()),
-            exact,
-            wildcards,
+            matcher,
         }
     }
 

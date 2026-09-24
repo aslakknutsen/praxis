@@ -37,6 +37,7 @@ pub mod reload;
 mod server_auth;
 pub mod setup;
 pub mod sni;
+pub mod sni_match;
 pub mod sni_name;
 #[cfg(feature = "spiffe")]
 pub(crate) mod spiffe;
@@ -58,4 +59,5 @@ pub use error::TlsError;
 pub use identity::TlsPeerIdentity;
 #[cfg(feature = "spiffe")]
 pub use server_auth::{SpiffePinnedPeer, pinned_client_config};
+pub use sni_match::{SniMatcher, SniMatcherError, WildcardMatch};
 pub use sni_name::{SniNameError, validate as validate_sni_name};

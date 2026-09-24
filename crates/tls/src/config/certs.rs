@@ -184,18 +184,20 @@ impl CaConfig {
 // -----------------------------------------------------------------------------
 
 /// Validate a `server_names` entry as a DNS hostname or wildcard.
+///
+/// Certificate server names use single-label wildcard semantics (RFC 6125 /
+/// RFC 9525), so the `>= 3` label rule (rejecting `*.com`) comes from the shared
+/// [`sni_match::validate_pattern`] — the same rule [`SniMatcher::build`] applies
+/// when the resolver is constructed.
+///
+/// [`sni_match::validate_pattern`]: crate::sni_match::validate_pattern
+/// [`SniMatcher::build`]: crate::sni_match::SniMatcher::build
 fn validate_server_name(name: &str) -> Result<(), TlsError> {
-    crate::sni_name::validate(name).map_err(|err| TlsError::ServerConfigError {
-        detail: format!("server_names '{name}': {err}"),
-    })?;
-
-    if name.starts_with("*.") && name.split('.').count() < 3 {
-        return Err(TlsError::ServerConfigError {
-            detail: format!("server_names '{name}': wildcard requires at least 3 labels (e.g. *.example.com)"),
-        });
-    }
-
-    Ok(())
+    crate::sni_match::validate_pattern(name, crate::sni_match::WildcardMatch::SingleLabel).map_err(|err| {
+        TlsError::ServerConfigError {
+            detail: format!("server_names '{name}': {err}"),
+        }
+    })
 }
 
 // -----------------------------------------------------------------------------

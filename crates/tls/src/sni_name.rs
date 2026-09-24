@@ -56,6 +56,13 @@ pub enum SniNameError {
     #[error("wildcard is only permitted as the complete leftmost label")]
     InvalidWildcard,
 
+    /// A wildcard pattern does not cover a subdomain — fewer than three
+    /// labels, e.g. `*.com`. Only raised under single-label matching
+    /// (certificate identity); suffix routing permits it. See
+    /// [`crate::sni_match::validate_pattern`].
+    #[error("wildcard requires at least 3 labels (e.g. *.example.com)")]
+    WildcardTooShallow,
+
     /// A DNS label within the name is invalid.
     #[error(transparent)]
     InvalidLabel(#[from] DnsLabelError),
