@@ -1,0 +1,6 @@
+self-hosted-runner:
+  # The labels of the RHEL 9 FIPS runner that the fips-host jobs in
+  # release.yaml and fips.yaml target (docs/developing/fips.md).
+  labels:
+    - fips
+    - rhel
