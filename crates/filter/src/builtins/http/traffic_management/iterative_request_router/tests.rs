@@ -5852,3 +5852,101 @@ fn irr_steps_share_materialization_budget_across_named_chains() {
         "the materialization budget must not reset when crossing an IRR step boundary: {err}"
     );
 }
+
+/// YAML for one IRR step whose `test_outbound_callout` binds an *inline* outbound
+/// chain defining `branches` branch chains, packed at the per-filter cap of 16,
+/// each resolving to the known named chain `utility` so only the branch name (not
+/// an inline sub-chain name) counts toward the total-branch ceiling. `prefix`
+/// keeps branch names unique; `on_result` is appended verbatim at 6-space indent.
+///
+/// Inline (not named) outbound chains are deliberate: a named outbound chain is a
+/// top-level `filter_chain` whose branches the config-wide pass already counted
+/// once, so binding it never touches the shared budget; only inline bindings
+/// accumulate into it. That accumulation is exactly what must carry across the
+/// IRR step boundary.
+fn irr_step_with_inline_branches(name: &str, prefix: &str, branches: usize, on_result: &str) -> String {
+    use std::fmt::Write as _;
+    let mut step = String::new();
+    writeln!(step, "    - name: {name}").unwrap();
+    writeln!(step, "      filters:").unwrap();
+    writeln!(step, "        - filter: test_outbound_callout").unwrap();
+    writeln!(step, "          outbound_chain:").unwrap();
+    writeln!(step, "            name: {name}_ob").unwrap();
+    writeln!(step, "            filters:").unwrap();
+    let mut emitted = 0;
+    while emitted < branches {
+        writeln!(step, "              - filter: request_id").unwrap();
+        writeln!(step, "                branch_chains:").unwrap();
+        for _ in 0..16 {
+            if emitted >= branches {
+                break;
+            }
+            writeln!(step, "                  - name: {prefix}_{emitted}").unwrap();
+            writeln!(step, "                    chains: [utility]").unwrap();
+            emitted += 1;
+        }
+    }
+    step.push_str(on_result);
+    step
+}
+
+#[test]
+fn irr_steps_share_total_branch_budget_across_inline_outbound_chains() {
+    let bound_len = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let registry = recording_callout_registry(std::sync::Arc::clone(&bound_len));
+
+    // Each step binds an inline outbound chain defining 144 branch chains. Either
+    // step alone stays under the 256-branch ceiling; only the shared branch budget
+    // threaded across the IRR boundary makes 144 + 144 = 288 exceed it. A per-step
+    // reset would let both steps build. Companion positive control below proves
+    // 144 alone builds, so this failure is accumulation, not a per-step overflow.
+    let top = format!(
+        "- filter: iterative_request_router\n  initial_step: s1\n  steps:\n{}{}",
+        irr_step_with_inline_branches(
+            "s1",
+            "s1b",
+            144,
+            "      on_result:\n        - default: true\n          next: s2\n"
+        ),
+        irr_step_with_inline_branches(
+            "s2",
+            "s2b",
+            144,
+            "      on_result:\n        - default: true\n          done: true\n"
+        ),
+    );
+    // Benign known chain so branch refs resolve and only branch names count.
+    let chains = [("utility", "- filter: headers")];
+
+    let err = build_top_level_with_chains(&registry, &top, &chains)
+        .err()
+        .expect("two 144-branch inline step bindings must exceed the shared 256-branch ceiling");
+    assert!(
+        err.to_string().contains("total branch count") && err.to_string().contains("256"),
+        "the total-branch budget must not reset when crossing an IRR step boundary: {err}"
+    );
+}
+
+#[test]
+fn single_irr_step_inline_branches_stay_under_shared_branch_budget() {
+    let bound_len = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let registry = recording_callout_registry(std::sync::Arc::clone(&bound_len));
+
+    // Positive control for the shared-budget test above: one step binding the same
+    // 144-branch inline chain is comfortably under the 256 ceiling and must build.
+    // This proves the two-step failure comes from accumulation across the IRR
+    // boundary, not from a single step already exceeding the ceiling.
+    let top = format!(
+        "- filter: iterative_request_router\n  initial_step: s1\n  steps:\n{}",
+        irr_step_with_inline_branches(
+            "s1",
+            "s1b",
+            144,
+            "      on_result:\n        - default: true\n          done: true\n"
+        ),
+    );
+    let chains = [("utility", "- filter: headers")];
+
+    build_top_level_with_chains(&registry, &top, &chains)
+        .expect("a single step's 144 inline branches are under the 256-branch ceiling and must build");
+}
