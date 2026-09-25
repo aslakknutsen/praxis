@@ -26,10 +26,13 @@
 
 use praxis_core::config::{Condition, FailureMode};
 
+#[cfg(feature = "bound-upstream-request-body")]
+use crate::body::BodyAccess;
 use crate::{
     any_filter::AnyFilter,
-    body::{BodyAccess, BodyMode},
+    body::BodyMode,
     pipeline::{
+        body::{RequestBodyPhase, effective_request_body_phase},
         branch::{RejoinTarget, ResolvedBranch},
         filter::PipelineFilter,
     },
@@ -220,10 +223,10 @@ fn reachable_from(filters: &[PipelineFilter], start: usize, binding_router: Opti
 /// router exists.
 pub(in crate::pipeline) fn uses_bound_upstream(filters: &[PipelineFilter]) -> bool {
     filters.iter().any(|pf| {
-        has_bound_upstream_condition(pf)
+        pf.has_bound_upstream_condition()
+            || effective_request_body_phase(pf) == RequestBodyPhase::BoundUpstream
             || matches!(&pf.filter, AnyFilter::Http(filter)
-                if crate::pipeline::body::participates_in_bound_upstream_body(filter.as_ref())
-                    || filter.consumes_bound_upstream()
+                if filter.consumes_bound_upstream()
                     || !nested_bound_upstream_readers(filter.as_ref()).is_empty())
             || pf.branches.iter().any(|branch| uses_bound_upstream(&branch.filters))
     })
@@ -792,16 +795,22 @@ fn rebind_error(name: &str, in_irr_step: bool) -> String {
     }
 }
 
-/// A `bound_upstream` condition on a filter that also runs an ordinary pre-read
-/// request-body hook.
+/// A `bound_upstream` condition on a filter whose request-body hook runs before
+/// binding.
 ///
-/// An ordinary pre-read body hook ([`request_body_access`]) runs before any
-/// binding exists, so pairing it with a `bound_upstream` condition on the same
-/// filter is contradictory: the condition cannot be evaluated when the hook
-/// runs. Body processing that needs the binding must move to the bound-upstream
-/// request-body phase.
+/// A pre-read body hook ([`request_body_access`]) runs before any binding
+/// exists, so pairing it with a `bound_upstream` condition on the same filter is
+/// contradictory: the condition cannot be evaluated when the hook runs. Only
+/// filters whose [`effective_request_body_phase`] resolves to [`PreRead`] are
+/// rejected. A dual-access filter is exempt — its `bound_upstream` condition
+/// defers the single hook to the binding barrier ([`BoundUpstream`]), which is
+/// exactly the intended use. Pre-read-only body processing that needs the
+/// binding must move to the bound-upstream request-body phase.
 ///
 /// [`request_body_access`]: crate::HttpFilter::request_body_access
+/// [`effective_request_body_phase`]: crate::pipeline::body::effective_request_body_phase
+/// [`PreRead`]: crate::pipeline::body::RequestBodyPhase::PreRead
+/// [`BoundUpstream`]: crate::pipeline::body::RequestBodyPhase::BoundUpstream
 pub(in crate::pipeline) fn check_bound_condition_with_pre_read_body(
     filters: &[PipelineFilter],
     request_body_mode: BodyMode,
@@ -811,10 +820,7 @@ pub(in crate::pipeline) fn check_bound_condition_with_pre_read_body(
         return;
     }
     for pf in filters {
-        if has_bound_upstream_condition(pf)
-            && let AnyFilter::Http(f) = &pf.filter
-            && f.request_body_access() != BodyAccess::None
-        {
+        if pf.has_bound_upstream_condition() && effective_request_body_phase(pf) == RequestBodyPhase::PreRead {
             errors.push(format!(
                 "filter '{name}' combines an ordinary pre-read request-body hook with a \
                  bound_upstream condition, but a pre-read body hook runs before any binding \
@@ -866,7 +872,11 @@ fn check_bound_upstream_body_mode(filters: &[PipelineFilter], errors: &mut Vec<S
         let AnyFilter::Http(filter) = &pf.filter else {
             continue;
         };
-        if filter.bound_upstream_request_body_access() == BodyAccess::None {
+        // Only a filter whose hook actually runs at the barrier is bound by the
+        // barrier's mode requirements. A dual-access filter deferred to pre-read
+        // (no `bound_upstream` condition) is validated by the pre-read rules
+        // instead, so it is exempt here.
+        if effective_request_body_phase(pf) != RequestBodyPhase::BoundUpstream {
             continue;
         }
         if super::filter_has_selected_upstream_condition(pf) {
@@ -910,15 +920,24 @@ fn check_branch_bound_upstream_body_filters(filters: &[PipelineFilter], errors: 
 
 /// IRR step pipelines inherit an already-frozen downstream binding and must not
 /// declare the once-per-downstream-request bound-body phase again.
+///
+/// Steps run the ordinary pre-read request-body phase (see
+/// [`execute_http_request_body`] in the subrequest executor) but never the
+/// bound-upstream barrier, so only a filter whose [`effective_request_body_phase`]
+/// resolves to [`BoundUpstream`] is rejected here. A dual-access filter deferred
+/// to pre-read (no `bound_upstream` condition) runs its hook in the step's
+/// pre-read phase and is exempt, even though it also declares bound access.
+///
+/// [`execute_http_request_body`]: crate::pipeline::FilterPipeline::execute_http_request_body
+/// [`effective_request_body_phase`]: crate::pipeline::body::effective_request_body_phase
+/// [`BoundUpstream`]: crate::pipeline::body::RequestBodyPhase::BoundUpstream
 #[cfg(feature = "bound-upstream-request-body")]
 fn check_step_bound_upstream_body_filters(filters: &[PipelineFilter], errors: &mut Vec<String>) {
     for pf in filters {
-        if let AnyFilter::Http(filter) = &pf.filter
-            && filter.bound_upstream_request_body_access() != BodyAccess::None
-        {
+        if effective_request_body_phase(pf) == RequestBodyPhase::BoundUpstream {
             errors.push(format!(
-                "filter '{}' declares bound-upstream request-body access inside an iterative_request_router step; move it to the parent pipeline before the IRR",
-                filter.name(),
+                "filter '{}' runs at the bound-upstream request-body barrier inside an iterative_request_router step, but a step inherits an already-frozen binding and never re-runs the barrier; move it to the parent pipeline before the IRR",
+                pf.filter.name(),
             ));
         }
         for branch in &pf.branches {
@@ -1079,17 +1098,6 @@ fn hosts_bound_consumer(pf: &PipelineFilter) -> bool {
 // Utilities
 // -----------------------------------------------------------------------------
 
-/// Whether any request condition on the filter gates on `bound_upstream`.
-///
-/// Only request-phase conditions are consulted: a response-phase condition
-/// always runs after routing, so the binding it reads is guaranteed to exist.
-fn has_bound_upstream_condition(pf: &PipelineFilter) -> bool {
-    pf.conditions.iter().any(|condition| {
-        let (Condition::When(m) | Condition::Unless(m)) = condition;
-        m.bound_upstream.is_some()
-    })
-}
-
 /// Whether the filter answers every request itself, so nothing after it runs
 /// and a bound request that reaches it needs no load balancer.
 ///
@@ -1166,7 +1174,7 @@ fn filter_binds_upstream(pf: &PipelineFilter) -> bool {
 /// balancer. Any of them without a guaranteed preceding binding is a
 /// fail-closed misconfiguration.
 fn binding_requirement_reason(pf: &PipelineFilter) -> Option<String> {
-    if has_bound_upstream_condition(pf) {
+    if pf.has_bound_upstream_condition() {
         return Some("a bound_upstream condition".to_owned());
     }
     let AnyFilter::Http(f) = &pf.filter else {
@@ -1180,7 +1188,7 @@ fn binding_requirement_reason(pf: &PipelineFilter) -> Option<String> {
             "nested steps '{}' read the logical binding",
             readers.join("', '")
         ))
-    } else if crate::pipeline::body::participates_in_bound_upstream_body(f.as_ref()) {
+    } else if effective_request_body_phase(pf) == RequestBodyPhase::BoundUpstream {
         Some("a bound-upstream request-body hook".to_owned())
     } else if f.consumes_bound_upstream() {
         Some("a bound_upstream load balancer".to_owned())
@@ -1209,7 +1217,10 @@ mod tests {
 
     use super::*;
     #[cfg(feature = "bound-upstream-request-body")]
-    use crate::pipeline::{checks::tests::selected_upstream_cond, test_filters::bound_body_filter};
+    use crate::pipeline::{
+        checks::tests::selected_upstream_cond,
+        test_filters::{bound_body_filter, dual_phase_body_filter},
+    };
     use crate::pipeline::{
         checks::tests::{
             body_filter, bound_condition, conditional_branch, conditional_host_with_branch, host_with_branch,
@@ -1943,6 +1954,136 @@ mod tests {
                 "post-request body mode can observe the binding: {errors:?}"
             );
         }
+    }
+
+    #[cfg(feature = "bound-upstream-request-body")]
+    #[test]
+    fn bound_condition_with_dual_phase_body_no_error() {
+        // A dual-access filter defers its single hook to the binding barrier, so
+        // pairing a bound_upstream condition with it is the intended use — not
+        // the pre-read contradiction the check rejects.
+        let mut pf = dual_phase_body_filter(
+            "dual",
+            BodyAccess::ReadOnly,
+            BodyAccess::ReadOnly,
+            BodyMode::StreamBuffer { max_bytes: Some(1024) },
+        );
+        pf.conditions = vec![bound_condition(Some("openai_responses"), None)];
+        let mut errors = Vec::new();
+        check_bound_condition_with_pre_read_body(
+            std::slice::from_ref(&pf),
+            BodyMode::StreamBuffer { max_bytes: Some(1024) },
+            &mut errors,
+        );
+        assert!(
+            errors.is_empty(),
+            "a dual-access filter's bound_upstream condition defers to the barrier: {errors:?}"
+        );
+    }
+
+    #[cfg(feature = "bound-upstream-request-body")]
+    #[test]
+    fn dual_phase_bound_condition_without_binding_errors() {
+        // The deferred hook still reads the binding, so it needs a preceding
+        // binding router just like any other bound consumer.
+        let mut pf = dual_phase_body_filter(
+            "dual",
+            BodyAccess::ReadOnly,
+            BodyAccess::ReadOnly,
+            BodyMode::StreamBuffer { max_bytes: Some(1024) },
+        );
+        pf.conditions = vec![bound_condition(Some("openai_responses"), None)];
+        let filters = vec![pf];
+        let mut errors = Vec::new();
+        check_bound_upstream_requires_binding(&filters, false, &mut errors);
+        assert_eq!(
+            errors.len(),
+            1,
+            "a deferred bound-body hook with no preceding binding must be rejected: {errors:?}"
+        );
+        assert!(
+            errors[0].contains("dual"),
+            "error should name the offending filter: {}",
+            errors[0]
+        );
+    }
+
+    #[cfg(feature = "bound-upstream-request-body")]
+    #[test]
+    fn dual_phase_no_condition_needs_no_binding() {
+        // Both accesses declared but no bound_upstream condition => the effective
+        // phase is pre-read, so the hook runs before routing. It must not be
+        // treated as a bound consumer: no binding router is required, even though
+        // it declares bound-upstream access.
+        let filters = vec![dual_phase_body_filter(
+            "dual",
+            BodyAccess::ReadOnly,
+            BodyAccess::ReadWrite,
+            BodyMode::StreamBuffer { max_bytes: Some(1024) },
+        )];
+        assert!(
+            !uses_bound_upstream(&filters),
+            "a pre-read dual-access filter does not observe the binding"
+        );
+        let mut errors = Vec::new();
+        check_bound_upstream_requires_binding(&filters, false, &mut errors);
+        assert!(
+            errors.is_empty(),
+            "a pre-read dual-access filter needs no preceding binding router: {errors:?}"
+        );
+    }
+
+    #[cfg(feature = "bound-upstream-request-body")]
+    #[test]
+    fn dual_phase_with_condition_uses_binding() {
+        // The same filter with a bound_upstream condition defers to the barrier,
+        // so binding enablement must flip back on.
+        let mut pf = dual_phase_body_filter(
+            "dual",
+            BodyAccess::ReadOnly,
+            BodyAccess::ReadWrite,
+            BodyMode::StreamBuffer { max_bytes: Some(1024) },
+        );
+        pf.conditions = vec![bound_condition(Some("openai_responses"), None)];
+        assert!(
+            uses_bound_upstream(std::slice::from_ref(&pf)),
+            "a deferred dual-access filter observes the binding"
+        );
+    }
+
+    #[cfg(feature = "bound-upstream-request-body")]
+    #[test]
+    fn dual_phase_no_condition_body_mode_unconstrained() {
+        // A pre-read dual-access filter is exempt from the barrier's bounded-buffer
+        // requirement: its hook runs pre-read, where streaming is allowed.
+        let filters = vec![dual_phase_body_filter(
+            "dual",
+            BodyAccess::ReadOnly,
+            BodyAccess::ReadWrite,
+            BodyMode::Stream,
+        )];
+        let mut errors = Vec::new();
+        check_bound_upstream_body_mode(&filters, &mut errors);
+        assert!(
+            errors.is_empty(),
+            "a pre-read dual-access filter is not held to the barrier mode rules: {errors:?}"
+        );
+    }
+
+    #[cfg(feature = "bound-upstream-request-body")]
+    #[test]
+    fn dual_phase_with_condition_requires_bounded_buffer() {
+        // Deferred to the barrier, the same filter must buffer a bounded body.
+        let mut pf = dual_phase_body_filter("dual", BodyAccess::ReadOnly, BodyAccess::ReadWrite, BodyMode::Stream);
+        pf.conditions = vec![bound_condition(Some("openai_responses"), None)];
+        let mut errors = Vec::new();
+        check_bound_upstream_body_mode(std::slice::from_ref(&pf), &mut errors);
+        assert_eq!(
+            errors.len(),
+            1,
+            "a deferred dual-access filter must declare a bounded StreamBuffer: {errors:?}"
+        );
+        assert!(errors[0].contains("StreamBuffer"), "{}", errors[0]);
     }
 
     #[cfg(feature = "bound-upstream-request-body")]
@@ -3495,6 +3636,57 @@ mod tests {
                 .first()
                 .is_some_and(|error| error.contains("bound_body") && error.contains("before the IRR")),
             "the error names the filter and the fix: {step_errors:?}"
+        );
+        assert!(
+            parent_errors.is_empty(),
+            "the same participant is legitimate in the parent pipeline: {parent_errors:?}"
+        );
+    }
+
+    #[cfg(feature = "bound-upstream-request-body")]
+    #[test]
+    fn pre_read_dual_participant_in_a_step_is_allowed() {
+        // No bound_upstream condition => the effective phase is pre-read, and IRR
+        // steps run the pre-read request-body phase, so the hook executes in the
+        // step. Declaring bound access alone must not get it rejected.
+        let filters = vec![dual_phase_body_filter(
+            "dual",
+            BodyAccess::ReadOnly,
+            BodyAccess::ReadWrite,
+            BodyMode::StreamBuffer { max_bytes: Some(4096) },
+        )];
+        let mut errors = Vec::new();
+        check_bound_upstream_body_participants(&filters, true, &mut errors);
+        assert!(
+            errors.is_empty(),
+            "a pre-read dual-access filter runs its pre-read hook inside the step: {errors:?}"
+        );
+    }
+
+    #[cfg(feature = "bound-upstream-request-body")]
+    #[test]
+    fn deferred_dual_participant_in_a_step_is_rejected() {
+        // A bound_upstream condition defers the same filter to the barrier, which a
+        // step never re-runs, so it must move before the IRR.
+        let mut pf = dual_phase_body_filter(
+            "dual",
+            BodyAccess::ReadOnly,
+            BodyAccess::ReadWrite,
+            BodyMode::StreamBuffer { max_bytes: Some(4096) },
+        );
+        pf.conditions = vec![bound_condition(Some("openai_responses"), None)];
+        let filters = vec![pf];
+        let mut step_errors = Vec::new();
+        let mut parent_errors = Vec::new();
+
+        check_bound_upstream_body_participants(&filters, true, &mut step_errors);
+        check_bound_upstream_body_participants(&filters, false, &mut parent_errors);
+
+        assert!(
+            step_errors
+                .iter()
+                .any(|error| error.contains("dual") && error.contains("before the IRR")),
+            "a deferred dual participant breaks the step rule: {step_errors:?}"
         );
         assert!(
             parent_errors.is_empty(),

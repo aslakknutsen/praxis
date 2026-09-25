@@ -95,7 +95,7 @@ runs the request-body hooks *before* the request phase.
 Nothing has been skipped at that point, so every filter
 declaring request-body access runs.
 
-Filters that need the logical route must instead declare
+Filters that need the logical route declare
 `bound_upstream_request_body_access` and implement
 `on_bound_upstream_request_body`, which requires the experimental
 `bound-upstream-request-body` build feature. That hook runs at most once after
@@ -106,6 +106,20 @@ Use `binds_upstream`, `consumes_bound_upstream`,
 `bound_upstream_clusters`, `declared_cluster_metadata`, and
 `nested_bound_upstream_readers` only for routing filters
 whose capabilities must be visible to pipeline validation.
+
+A filter may declare *both* `request_body_access` (pre-read) and
+`bound_upstream_request_body_access` (the barrier). Core infers one effective
+phase per filter from whether it carries a `bound_upstream` request condition,
+and runs the hook exactly once — declaring both defers the body work to the
+barrier when a condition asks for it, and never runs it twice:
+
+| Declared access | Has `bound_upstream` condition | Runs at |
+| --- | --- | --- |
+| Pre-read only | No | pre-read (`on_request_body`) |
+| Pre-read only | Yes | rejected at load |
+| Bound-upstream only | Either | barrier (`on_bound_upstream_request_body`) |
+| Both | No | pre-read (`on_request_body`) |
+| Both | Yes | barrier (`on_bound_upstream_request_body`) |
 
 ### Common Patterns
 

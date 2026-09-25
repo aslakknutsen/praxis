@@ -118,11 +118,14 @@ a filter would silently never run. An `unless` that nothing satisfies is
 allowed; it just leaves the filter running.
 
 Two condition placements are refused because they would be evaluated before
-any binding exists: a `bound_upstream` condition on a filter with an ordinary
-pre-read body hook, and one on a top-level `trace_context`. The IRR declares a
-pre-read body hook (it needs the buffered body), so an IRR cannot carry its own
-`bound_upstream` condition; gate it through a branch host instead, as the
-dispatch example does.
+any binding exists: a `bound_upstream` condition on a filter whose request-body
+hook runs only at pre-read, and one on a top-level `trace_context`. A filter
+that *also* declares `bound_upstream_request_body_access` is exempt: the
+condition defers it to the barrier, where the binding exists, so it runs there
+instead of at pre-read (see [The Freeze](#the-freeze)). The IRR declares only a
+pre-read body hook and no bound-upstream body access, so it stays in the refused
+case: an IRR cannot carry its own `bound_upstream` condition; gate it through a
+branch host instead, as the dispatch example does.
 
 For general condition syntax see [Payload Processing](payload-processing.md);
 for how conditions interact with branches see
@@ -156,6 +159,13 @@ retries, and later selected-upstream adaptation all see, and is checked against
 the request-body ceiling. A read-only participant works on a copy and cannot
 change the body. `selected_upstream` conditions are rejected on participants,
 since no endpoint has been selected yet.
+
+A filter may declare both `request_body_access` and
+`bound_upstream_request_body_access`. Core resolves one effective phase per
+filter and runs the hook exactly once: with a `bound_upstream` request condition
+it runs here at the freeze; without one it runs at pre-read, before any binding
+exists. Declaring both never runs the body twice — it lets one filter defer its
+body work to the binding when the operator's condition asks it to.
 
 Source: `crates/filter/src/pipeline/http.rs`.
 
@@ -203,8 +213,10 @@ rejected before it serves traffic if:
   request that falls out of one fallback branch reaches the next only through
   a `next` rejoin or a spent top-level re-entry loop, because a jump out of a
   branch-hosted IRR is discarded and nothing after it runs);
-- a `bound_upstream` condition sits on a filter with an ordinary pre-read body
-  hook, or on a top-level `trace_context`;
+- a `bound_upstream` condition sits on a filter whose request-body hook runs
+  only at pre-read (one that also declares `bound_upstream_request_body_access`
+  is exempt — the condition defers it to the barrier), or on a top-level
+  `trace_context`;
 - a cluster the router can bind reaches no load balancer that serves it and no
   filter that answers, on some path from the router;
 - a `when: bound_upstream` matcher, at the top level, in a branch, or in an IRR
@@ -230,7 +242,8 @@ matches) or closed (a bound load balancer returns 500) at runtime instead.
 ## Known limitations
 
 - An IRR cannot carry its own `bound_upstream` condition, because it declares a
-  pre-read body hook. Gate it through a branch host.
+  pre-read body hook and no bound-upstream body access, so the condition would be
+  evaluated before any binding exists. Gate it through a branch host.
 - A bound load balancer in a `next`-rejoin branch that runs before an
   unconditional IRR counts as the router's consumer, although the IRR then
   overrides its selection. Use `rejoin: terminal` for direct dispatch.

@@ -101,4 +101,20 @@ impl PipelineFilter {
             response_conditions,
         }
     }
+
+    /// Whether any request condition on this filter gates on `bound_upstream`.
+    ///
+    /// Only request-phase conditions are consulted: a response-phase
+    /// condition always runs after routing, so the binding it reads is
+    /// guaranteed to exist. Used both by binding validation and by
+    /// [`effective_request_body_phase`] to infer whether a dual-phase body
+    /// hook defers to the bound-upstream barrier.
+    ///
+    /// [`effective_request_body_phase`]: super::body::effective_request_body_phase
+    pub(crate) fn has_bound_upstream_condition(&self) -> bool {
+        self.conditions.iter().any(|condition| {
+            let (Condition::When(m) | Condition::Unless(m)) = condition;
+            m.bound_upstream.is_some()
+        })
+    }
 }

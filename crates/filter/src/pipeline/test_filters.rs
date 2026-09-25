@@ -87,6 +87,27 @@ pub(in crate::pipeline) fn bound_body_filter(name: &'static str, access: BodyAcc
     })
 }
 
+/// A filter declaring BOTH a pre-read and a bound-upstream request-body hook,
+/// with the given accesses and a shared delivery mode.
+///
+/// Used to exercise dual-access phase inference: the effective phase depends on
+/// whether the filter carries a `bound_upstream` request condition.
+#[cfg(feature = "bound-upstream-request-body")]
+pub(in crate::pipeline) fn dual_phase_body_filter(
+    name: &'static str,
+    pre_read: BodyAccess,
+    bound: BodyAccess,
+    mode: BodyMode,
+) -> PipelineFilter {
+    capability_filter(CapabilityFilter {
+        name,
+        request_body_access: pre_read,
+        bound_upstream_request_body_access: bound,
+        request_body_mode: Some(mode),
+        ..CapabilityFilter::default()
+    })
+}
+
 /// A filter declaring application metadata for one cluster, standing in for a
 /// load balancer in catalog tests.
 #[cfg(feature = "upstream-binding")]

@@ -51,6 +51,58 @@ impl HttpFilter for AppendBoundMarker {
     }
 }
 
+/// Declares BOTH the pre-read (`on_request_body`) and bound-upstream
+/// (`on_bound_upstream_request_body`) hooks. Core resolves a single effective
+/// phase per filter: with a `bound_upstream` request condition it defers to the
+/// barrier and appends `|bound`; without one it runs at pre-read and appends
+/// `|pre`. It never runs both — this filter proves the hook fires exactly once,
+/// end-to-end, on the phase the condition selects.
+struct AppendPreOrBoundMarker;
+
+#[async_trait::async_trait]
+impl HttpFilter for AppendPreOrBoundMarker {
+    fn name(&self) -> &'static str {
+        "append_pre_or_bound_marker"
+    }
+
+    async fn on_request(&self, _ctx: &mut HttpFilterContext<'_>) -> Result<FilterAction, FilterError> {
+        Ok(FilterAction::Continue)
+    }
+
+    fn request_body_access(&self) -> BodyAccess {
+        BodyAccess::ReadWrite
+    }
+
+    fn bound_upstream_request_body_access(&self) -> BodyAccess {
+        BodyAccess::ReadWrite
+    }
+
+    fn request_body_mode(&self) -> BodyMode {
+        BodyMode::StreamBuffer { max_bytes: Some(4096) }
+    }
+
+    async fn on_request_body(
+        &self,
+        _ctx: &mut HttpFilterContext<'_>,
+        body: &mut Option<Bytes>,
+        end_of_stream: bool,
+    ) -> Result<FilterAction, FilterError> {
+        if end_of_stream {
+            append(body, b"|pre");
+        }
+        Ok(FilterAction::Continue)
+    }
+
+    async fn on_bound_upstream_request_body(
+        &self,
+        _ctx: &mut HttpFilterContext<'_>,
+        body: &mut Option<Bytes>,
+    ) -> Result<BoundUpstreamBodyOutcome, FilterError> {
+        append(body, b"|bound");
+        Ok(BoundUpstreamBodyOutcome::Continue)
+    }
+}
+
 /// Appends `|bound` at the barrier, then takes the buffered body in its own
 /// later `on_request`, the way a request filter that consumes the body does.
 struct AppendBoundThenTakeBuffered;
@@ -371,6 +423,40 @@ insecure_options:
     )
 }
 
+/// Direct bound dispatch where the body filter carries a `bound_upstream`
+/// request condition, so a dual-hook filter defers to the barrier.
+fn direct_conditional_yaml(proxy_port: u16, backend_port: u16, filter_name: &str) -> String {
+    format!(
+        r#"
+listeners:
+  - name: default
+    address: "127.0.0.1:{proxy_port}"
+    filter_chains: [main]
+filter_chains:
+  - name: main
+    filters:
+      - filter: router
+        routes:
+          - path_prefix: "/"
+            cluster: backend
+      - filter: {filter_name}
+        conditions:
+          - when:
+              bound_upstream:
+                application_provider: test
+      - filter: load_balancer
+        cluster_source: bound_upstream
+        clusters:
+          - name: backend
+            http:
+              application_provider: test
+            endpoints: ["127.0.0.1:{backend_port}"]
+insecure_options:
+  allow_private_endpoints: true
+"#
+    )
+}
+
 fn branch_yaml(proxy_port: u16, backend_port: u16, filter_name: &str) -> String {
     format!(
         r#"
@@ -500,6 +586,55 @@ fn rewrite_reaches_direct_bound_dispatch_exactly_once() {
         body.matches("|bound").count(),
         1,
         "the bound rewrite should be applied exactly once: {body}"
+    );
+}
+
+#[test]
+fn dual_hook_without_bound_condition_runs_at_pre_read() {
+    let backend = start_echo_backend();
+    let proxy_port = free_port();
+    let config = Config::from_yaml(&direct_yaml(proxy_port, backend.port(), "append_pre_or_bound_marker")).unwrap();
+    let registry = registry_with("append_pre_or_bound_marker", || Box::new(AppendPreOrBoundMarker));
+    let proxy = start_full_proxy_with_registry(&config, &registry);
+
+    let (status, body) = http_post(proxy.addr(), "/echo", "original");
+
+    assert_eq!(status, 200, "the pre-read rewrite should be forwarded");
+    assert_eq!(
+        body, "original|pre",
+        "with no bound_upstream condition a dual-hook filter runs on_request_body, not the barrier"
+    );
+    assert_eq!(
+        body.matches("|bound").count(),
+        0,
+        "the barrier hook must not run when the effective phase is pre-read: {body}"
+    );
+}
+
+#[test]
+fn dual_hook_with_bound_condition_runs_at_barrier() {
+    let backend = start_echo_backend();
+    let proxy_port = free_port();
+    let config = Config::from_yaml(&direct_conditional_yaml(
+        proxy_port,
+        backend.port(),
+        "append_pre_or_bound_marker",
+    ))
+    .unwrap();
+    let registry = registry_with("append_pre_or_bound_marker", || Box::new(AppendPreOrBoundMarker));
+    let proxy = start_full_proxy_with_registry(&config, &registry);
+
+    let (status, body) = http_post(proxy.addr(), "/echo", "original");
+
+    assert_eq!(status, 200, "the bound rewrite should be forwarded");
+    assert_eq!(
+        body, "original|bound",
+        "a bound_upstream condition defers the dual-hook filter to on_bound_upstream_request_body"
+    );
+    assert_eq!(
+        body.matches("|pre").count(),
+        0,
+        "the pre-read hook must not run when the effective phase is the barrier: {body}"
     );
 }
 

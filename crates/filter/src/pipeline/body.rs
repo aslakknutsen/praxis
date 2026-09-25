@@ -80,18 +80,23 @@ pub(super) fn compute_body_capabilities(filters: &[PipelineFilter]) -> BodyCapab
 /// Precompute the pipeline indices of filters that declared body access.
 ///
 /// The body-chunk loops run once per chunk; walking only these indices
-/// skips non-body filters without a per-chunk predicate check.
+/// skips non-body filters without a per-chunk predicate check. The request
+/// set holds only filters whose [`effective_request_body_phase`] is
+/// [`PreRead`]: a dual-access filter deferred to the binding barrier runs its
+/// hook there instead and is excluded here.
+///
+/// [`PreRead`]: RequestBodyPhase::PreRead
 pub(super) fn body_filter_indices(filters: &[PipelineFilter]) -> (Vec<usize>, Vec<usize>) {
     let mut request = Vec::new();
     let mut response = Vec::new();
     for (idx, pf) in filters.iter().enumerate() {
-        if let AnyFilter::Http(f) = &pf.filter {
-            if f.request_body_access() != BodyAccess::None {
-                request.push(idx);
-            }
-            if f.response_body_access() != BodyAccess::None {
-                response.push(idx);
-            }
+        if effective_request_body_phase(pf) == RequestBodyPhase::PreRead {
+            request.push(idx);
+        }
+        if let AnyFilter::Http(f) = &pf.filter
+            && f.response_body_access() != BodyAccess::None
+        {
+            response.push(idx);
         }
     }
     (request, response)
@@ -115,19 +120,25 @@ pub(super) fn selected_upstream_request_body_indices(filters: &[PipelineFilter])
     indices
 }
 
-/// Precompute the pipeline indices of filters that declared
-/// bound-upstream request-body access.
+/// Precompute the pipeline indices of filters that run at the bound-upstream
+/// request-body barrier.
+///
+/// A filter runs here when its [`effective_request_body_phase`] is
+/// [`BoundUpstream`]: a bound-only declaration, or a dual-access declaration
+/// whose `bound_upstream` condition defers it past the binding router. Such
+/// dual-access filters are correspondingly excluded from the pre-read set in
+/// [`body_filter_indices`], so each hook runs exactly once.
 ///
 /// Top-level only: branch filters never run body hooks, so a bound-upstream
 /// declaration inside a branch is rejected at build time rather than
 /// collected here.
+///
+/// [`BoundUpstream`]: RequestBodyPhase::BoundUpstream
 #[cfg(feature = "bound-upstream-request-body")]
 pub(super) fn bound_upstream_request_body_indices(filters: &[PipelineFilter]) -> Vec<usize> {
     let mut indices = Vec::new();
     for (idx, pf) in filters.iter().enumerate() {
-        if let AnyFilter::Http(f) = &pf.filter
-            && participates_in_bound_upstream_body(f.as_ref())
-        {
+        if effective_request_body_phase(pf) == RequestBodyPhase::BoundUpstream {
             indices.push(idx);
         }
     }
@@ -138,7 +149,6 @@ pub(super) fn bound_upstream_request_body_indices(filters: &[PipelineFilter]) ->
 ///
 /// Always `false` unless the experimental `bound-upstream-request-body`
 /// feature compiles the hook in.
-#[cfg(feature = "upstream-binding")]
 pub(super) fn participates_in_bound_upstream_body(filter: &dyn crate::filter::HttpFilter) -> bool {
     #[cfg(feature = "bound-upstream-request-body")]
     {
@@ -148,6 +158,61 @@ pub(super) fn participates_in_bound_upstream_body(filter: &dyn crate::filter::Ht
     {
         let _ = filter;
         false
+    }
+}
+
+/// The single request-body phase a filter's hook effectively runs in.
+///
+/// A filter may declare pre-read access ([`request_body_access`]) and
+/// bound-upstream access ([`bound_upstream_request_body_access`]). Declaring
+/// both means "defer this operation to the binding barrier when my conditions
+/// require it," never "run twice": a `bound_upstream` request condition selects
+/// [`BoundUpstream`], its absence selects [`PreRead`]. Core resolves exactly one
+/// phase per filter so the hook runs exactly once.
+///
+/// [`request_body_access`]: crate::HttpFilter::request_body_access
+/// [`bound_upstream_request_body_access`]: crate::HttpFilter::bound_upstream_request_body_access
+/// [`PreRead`]: RequestBodyPhase::PreRead
+/// [`BoundUpstream`]: RequestBodyPhase::BoundUpstream
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum RequestBodyPhase {
+    /// The filter runs no request-body hook.
+    None,
+    /// The pre-read phase, before the request phase selects an upstream.
+    PreRead,
+    /// The bound-upstream barrier, after the router binds a logical upstream.
+    BoundUpstream,
+}
+
+/// Resolve the single [`RequestBodyPhase`] a filter's request-body hook runs in.
+///
+/// Applies the dual-access truth table: a pre-read-only declaration runs
+/// [`PreRead`], a bound-only declaration runs [`BoundUpstream`], and a
+/// dual-access declaration defers to [`BoundUpstream`] exactly when the filter
+/// carries a `bound_upstream` request condition, otherwise [`PreRead`]. Filters
+/// that declare neither access (or are not HTTP filters) run no hook.
+///
+/// [`PreRead`]: RequestBodyPhase::PreRead
+/// [`BoundUpstream`]: RequestBodyPhase::BoundUpstream
+pub(super) fn effective_request_body_phase(pf: &PipelineFilter) -> RequestBodyPhase {
+    let AnyFilter::Http(filter) = &pf.filter else {
+        return RequestBodyPhase::None;
+    };
+    let pre_read = filter.request_body_access() != BodyAccess::None;
+    let bound = participates_in_bound_upstream_body(filter.as_ref());
+    match (pre_read, bound) {
+        (false, false) => RequestBodyPhase::None,
+        (true, false) => RequestBodyPhase::PreRead,
+        (false, true) => RequestBodyPhase::BoundUpstream,
+        // Dual-access: defer to the barrier only when a bound_upstream
+        // condition requires the binding, otherwise run pre-read.
+        (true, true) => {
+            if pf.has_bound_upstream_condition() {
+                RequestBodyPhase::BoundUpstream
+            } else {
+                RequestBodyPhase::PreRead
+            }
+        },
     }
 }
 
@@ -182,10 +247,19 @@ fn accumulate_caps_inner(caps: &mut BodyCapabilities, filters: &[PipelineFilter]
         };
 
         if !in_branch {
-            accumulate_request_body(caps, http_filter);
+            // A dual-access filter contributes to exactly one request-body
+            // phase, matching where its single hook runs (see
+            // `effective_request_body_phase`), so read/write capabilities and
+            // the buffered mode are computed for the selected phase only.
+            match effective_request_body_phase(pf) {
+                RequestBodyPhase::PreRead => accumulate_request_body(caps, http_filter),
+                RequestBodyPhase::BoundUpstream => {
+                    #[cfg(feature = "bound-upstream-request-body")]
+                    accumulate_bound_upstream_request_body(caps, http_filter);
+                },
+                RequestBodyPhase::None => {},
+            }
             accumulate_selected_upstream_request_body(caps, http_filter);
-            #[cfg(feature = "bound-upstream-request-body")]
-            accumulate_bound_upstream_request_body(caps, http_filter);
             accumulate_response_body(caps, http_filter, &pf.response_conditions);
             if !caps.any_response_condition_uses_headers {
                 caps.any_response_condition_uses_headers = resp_conditions_use_headers(&pf.response_conditions);
@@ -985,6 +1059,132 @@ mod tests {
         assert_eq!(indices, vec![0], "only the declaring filter's index is collected");
     }
 
+    #[cfg(feature = "bound-upstream-request-body")]
+    #[test]
+    fn dual_phase_without_bound_condition_runs_pre_read() {
+        let pf = PipelineFilter::new(
+            0,
+            AnyFilter::Http(Box::new(DualPhaseCapFilter {
+                pre_read: BodyAccess::ReadOnly,
+                bound: BodyAccess::ReadOnly,
+                mode: BodyMode::StreamBuffer { max_bytes: Some(4096) },
+            })),
+            vec![],
+            vec![],
+        );
+        assert_eq!(
+            effective_request_body_phase(&pf),
+            RequestBodyPhase::PreRead,
+            "a dual-access filter with no bound_upstream condition runs pre-read"
+        );
+        let filters = vec![pf];
+        let (request, _response) = body_filter_indices(&filters);
+        assert_eq!(request, vec![0], "it is scheduled in the pre-read set");
+        assert!(
+            bound_upstream_request_body_indices(&filters).is_empty(),
+            "it is not scheduled at the binding barrier"
+        );
+    }
+
+    #[cfg(feature = "bound-upstream-request-body")]
+    #[test]
+    fn dual_phase_with_bound_condition_runs_at_barrier() {
+        let pf = PipelineFilter::new(
+            0,
+            AnyFilter::Http(Box::new(DualPhaseCapFilter {
+                pre_read: BodyAccess::ReadOnly,
+                bound: BodyAccess::ReadOnly,
+                mode: BodyMode::StreamBuffer { max_bytes: Some(4096) },
+            })),
+            vec![bound_upstream_condition()],
+            vec![],
+        );
+        assert_eq!(
+            effective_request_body_phase(&pf),
+            RequestBodyPhase::BoundUpstream,
+            "a bound_upstream condition defers a dual-access hook to the barrier"
+        );
+        let filters = vec![pf];
+        let (request, _response) = body_filter_indices(&filters);
+        assert!(request.is_empty(), "it is excluded from the pre-read set");
+        assert_eq!(
+            bound_upstream_request_body_indices(&filters),
+            vec![0],
+            "it is scheduled at the binding barrier"
+        );
+    }
+
+    #[cfg(feature = "bound-upstream-request-body")]
+    #[test]
+    fn dual_phase_hook_scheduled_in_exactly_one_phase() {
+        for conditions in [vec![], vec![bound_upstream_condition()]] {
+            let filters = vec![PipelineFilter::new(
+                0,
+                AnyFilter::Http(Box::new(DualPhaseCapFilter {
+                    pre_read: BodyAccess::ReadWrite,
+                    bound: BodyAccess::ReadWrite,
+                    mode: BodyMode::StreamBuffer { max_bytes: Some(4096) },
+                })),
+                conditions,
+                vec![],
+            )];
+            let (request, _response) = body_filter_indices(&filters);
+            let bound = bound_upstream_request_body_indices(&filters);
+            assert_eq!(
+                request.len() + bound.len(),
+                1,
+                "a dual-access hook is scheduled exactly once, never twice"
+            );
+            assert!(
+                request.is_empty() != bound.is_empty(),
+                "the hook lands in exactly one phase, never both or neither"
+            );
+        }
+    }
+
+    #[cfg(feature = "bound-upstream-request-body")]
+    #[test]
+    fn dual_phase_capabilities_follow_selected_phase() {
+        // Pre-read ReadOnly, bound-upstream ReadWrite: the writer flag depends
+        // entirely on which phase the single hook is scheduled in.
+        let pre_read = PipelineFilter::new(
+            0,
+            AnyFilter::Http(Box::new(DualPhaseCapFilter {
+                pre_read: BodyAccess::ReadOnly,
+                bound: BodyAccess::ReadWrite,
+                mode: BodyMode::StreamBuffer { max_bytes: Some(4096) },
+            })),
+            vec![],
+            vec![],
+        );
+        let caps = compute_body_capabilities(&[pre_read]);
+        assert!(
+            caps.needs_request_body,
+            "the pre-read phase still needs the request body"
+        );
+        assert!(
+            !caps.any_request_body_writer,
+            "the pre-read phase declares ReadOnly, so nothing writes the body"
+        );
+
+        let bound = PipelineFilter::new(
+            0,
+            AnyFilter::Http(Box::new(DualPhaseCapFilter {
+                pre_read: BodyAccess::ReadOnly,
+                bound: BodyAccess::ReadWrite,
+                mode: BodyMode::StreamBuffer { max_bytes: Some(4096) },
+            })),
+            vec![bound_upstream_condition()],
+            vec![],
+        );
+        let caps = compute_body_capabilities(&[bound]);
+        assert!(caps.needs_request_body, "the bound phase still needs the request body");
+        assert!(
+            caps.any_request_body_writer,
+            "the bound phase declares ReadWrite, so capability calc must mark the body as written"
+        );
+    }
+
     // -------------------------------------------------------------------------
     // Test Utilities
     // -------------------------------------------------------------------------
@@ -1064,5 +1264,60 @@ mod tests {
         fn request_body_mode(&self) -> BodyMode {
             self.mode
         }
+    }
+
+    /// Dual-access request-body participant: declares both a pre-read and a
+    /// bound-upstream request-body hook, for phase-inference tests.
+    #[cfg(feature = "bound-upstream-request-body")]
+    struct DualPhaseCapFilter {
+        pre_read: BodyAccess,
+        bound: BodyAccess,
+        mode: BodyMode,
+    }
+
+    #[cfg(feature = "bound-upstream-request-body")]
+    #[async_trait::async_trait]
+    impl crate::filter::HttpFilter for DualPhaseCapFilter {
+        fn name(&self) -> &'static str {
+            "dual_phase_cap"
+        }
+
+        async fn on_request(
+            &self,
+            _ctx: &mut crate::HttpFilterContext<'_>,
+        ) -> Result<crate::FilterAction, crate::FilterError> {
+            Ok(crate::FilterAction::Continue)
+        }
+
+        fn request_body_access(&self) -> BodyAccess {
+            self.pre_read
+        }
+
+        fn bound_upstream_request_body_access(&self) -> BodyAccess {
+            self.bound
+        }
+
+        fn request_body_mode(&self) -> BodyMode {
+            self.mode
+        }
+    }
+
+    /// A request condition gating on `bound_upstream`, for phase-inference tests.
+    #[cfg(feature = "bound-upstream-request-body")]
+    fn bound_upstream_condition() -> praxis_core::config::Condition {
+        use praxis_core::config::{ApplicationMatch, Condition, ConditionMatch};
+
+        Condition::When(ConditionMatch {
+            grpc: None,
+            path: None,
+            path_prefix: None,
+            methods: None,
+            headers: None,
+            bound_upstream: Some(ApplicationMatch {
+                application_protocol: None,
+                application_provider: Some("openai".to_owned()),
+            }),
+            selected_upstream: None,
+        })
     }
 }

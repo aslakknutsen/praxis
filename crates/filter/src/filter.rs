@@ -288,6 +288,13 @@ pub trait HttpFilter: Send + Sync {
     /// [`on_request_body`] without modification rights, or
     /// [`BodyAccess::ReadWrite`] to mutate body bytes in place.
     ///
+    /// This declares the *pre-read* request-body hook, which runs before the
+    /// request phase selects an upstream. A filter whose body operation can run
+    /// either before routing or only after a logical binding declares this hook
+    /// **and** `bound_upstream_request_body_access`; core then schedules the
+    /// single hook in exactly one phase based on the filter's conditions (see
+    /// that method's dual-access contract).
+    ///
     /// [`on_request_body`]: HttpFilter::on_request_body
     fn request_body_access(&self) -> BodyAccess {
         BodyAccess::None
@@ -357,7 +364,31 @@ pub trait HttpFilter: Send + Sync {
     /// bounded `StreamBuffer`, and rejects a participant that no binding
     /// filter can precede.
     ///
+    /// # Dual-access contract
+    ///
+    /// A filter may declare both [`request_body_access`] and this method.
+    /// Declaring both means "this body operation can be *deferred* to the
+    /// binding barrier when its conditions require the binding" — it never means
+    /// "run the hook twice." Core resolves a single effective phase per filter
+    /// and runs the hook exactly once:
+    ///
+    /// | Declared access | Has `bound_upstream` condition | Effective phase |
+    /// |---|---|---|
+    /// | Pre-read only | No | pre-read ([`on_request_body`]) |
+    /// | Pre-read only | Yes | validation error |
+    /// | Bound only | Either | bound-upstream ([`on_bound_upstream_request_body`]) |
+    /// | Both | No | pre-read ([`on_request_body`]) |
+    /// | Both | Yes | bound-upstream ([`on_bound_upstream_request_body`]) |
+    ///
+    /// So a filter that adapts to the binding when required implements both
+    /// hooks, and the operator writes only the policy — e.g. a
+    /// `bound_upstream` condition — to defer it. Because a pre-read-only hook
+    /// runs before any binding exists, validation rejects a `bound_upstream`
+    /// condition on a filter that leaves this method at [`BodyAccess::None`].
+    ///
     /// [`on_bound_upstream_request_body`]: HttpFilter::on_bound_upstream_request_body
+    /// [`on_request_body`]: HttpFilter::on_request_body
+    /// [`request_body_access`]: HttpFilter::request_body_access
     /// [`request_body_mode`]: HttpFilter::request_body_mode
     /// [`BodyMode::StreamBuffer`]: crate::BodyMode::StreamBuffer
     #[cfg(feature = "bound-upstream-request-body")]
