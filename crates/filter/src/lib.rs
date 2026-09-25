@@ -43,6 +43,7 @@
 
 mod actions;
 mod any_filter;
+mod bench_metrics;
 mod binding;
 pub mod body;
 pub mod builtins;
@@ -113,6 +114,7 @@ pub use binding::ChainBindingContext;
 #[cfg(feature = "chain-binding")]
 pub use binding::ChainBindingHttpFactory;
 pub use body::{BodyAccess, BodyBuffer, BodyBufferOverflow, BodyCapabilities, BodyMode};
+pub use bench_metrics::{prepass_apply_count, reset as reset_bench_metrics};
 #[cfg(feature = "basic-auth-filter")]
 pub use builtins::BasicAuthFilter;
 pub use builtins::{

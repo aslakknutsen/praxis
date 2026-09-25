@@ -329,6 +329,7 @@ impl FilterPipeline {
         // any filter's on_request_body. Results land in metadata/headers
         // so participating filters can skip their own JSON parsing.
         if end_of_stream && let Some(prepass) = &self.json_extract_prepass {
+            crate::bench_metrics::prepass_apply();
             let bytes = body.as_deref().unwrap_or(&[]);
             let mut store = crate::json_ops::HttpJsonStore::new(ctx);
             if let Err(e) = prepass.apply(bytes, &mut store) {

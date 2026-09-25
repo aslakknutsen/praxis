@@ -27,6 +27,7 @@ otel = [
     "dep:opentelemetry",
     "dep:tracing-opentelemetry",
 ]
+json-bench-metrics = []
 
 cloud-events-filter = [
     "dep:chrono",
