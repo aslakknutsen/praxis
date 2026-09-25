@@ -435,10 +435,12 @@ jobs:
 
       - name: Pull the pushed FIPS image by digest and name it for the checks
         env:
-          IMAGE: ghcr.io/${{ github.repository }}@${{ needs.container.outputs.fips-digest }}
+          # Not IMAGE: an environment variable overrides the Makefile's
+          # IMAGE ?= default and corrupts FIPS_IMAGE_REF, the tag target.
+          FIPS_IMAGE_SOURCE: ghcr.io/${{ github.repository }}@${{ needs.container.outputs.fips-digest }}
         run: |
-          podman pull "$IMAGE"
-          make fips-image-tag FIPS_IMAGE_SOURCE="$IMAGE"
+          podman pull "$FIPS_IMAGE_SOURCE"
+          make fips-image-tag FIPS_IMAGE_SOURCE="$FIPS_IMAGE_SOURCE"
 
       - uses: ./.github/actions/fips-host
         with:
