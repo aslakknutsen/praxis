@@ -30,6 +30,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   handshakes remain healthy when that deadline expires without a response.
   Rust consumers matching `HealthCheckType` exhaustively must handle the new
   `Tls` variant even when the feature is disabled.
+- Route-level `weighted_clusters` targets: a route may select among several
+  clusters by static weight, with priority tiers that spill only when the
+  active tier has no healthy cluster. `cluster:` remains the shorthand for a
+  single target. Route-target weights compose multiplicatively with endpoint
+  weights; endpoint load-balancing behavior is unchanged.
 
 ### Fixed
 

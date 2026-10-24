@@ -19,7 +19,7 @@ use std::hint::black_box;
 
 use common::{bench_runtime, make_ctx, make_request};
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
-use praxis_core::config::{PathMatch, Route};
+use praxis_core::config::{PathMatch, Route, RouteTarget};
 use praxis_filter::{HttpFilter as _, RouterFilter};
 
 // -----------------------------------------------------------------------------
@@ -93,7 +93,9 @@ fn make_routes(n: usize) -> Vec<Route> {
             },
             host: None,
             headers: None,
-            cluster: format!("cluster-{i}").into(),
+            target: RouteTarget::Single {
+                cluster: format!("cluster-{i}").into(),
+            },
             retry_policy: None,
             hedge_policy: None,
         })
@@ -105,7 +107,7 @@ fn make_routes(n: usize) -> Vec<Route> {
         },
         host: None,
         headers: None,
-        cluster: "fallback".into(),
+        target: "fallback".into(),
         retry_policy: None,
         hedge_policy: None,
     });

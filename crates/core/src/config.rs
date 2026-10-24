@@ -63,7 +63,9 @@ use parse::check_yaml_safety;
 pub use parse::read_config_file;
 pub use praxis_tls::{CachedClusterTls, ClusterTls};
 pub use redaction::{is_credential_header_name, redact_condition_headers, redact_response_condition_headers};
-pub use route::{PathMatch, Route};
+pub use route::{
+    DEFAULT_TARGET_WEIGHT, MAX_TARGET_WEIGHT, PathMatch, Route, RouteTarget, WeightedClusters, WeightedTarget,
+};
 pub use runtime::{DEFAULT_SUBREQUEST_POOL_SIZE, RuntimeConfig};
 #[cfg(feature = "otel")]
 pub(crate) use telemetry::OTLP_PROTOCOL_ENV_VAR;

@@ -145,13 +145,18 @@ pub(in crate::pipeline) fn noop_filter_with_conditions(
 }
 
 fn capability_filter(filter: CapabilityFilter) -> PipelineFilter {
+    wrap_http_filter(Box::new(filter))
+}
+
+/// Wrap a real filter implementation for capability validation tests.
+pub(in crate::pipeline) fn wrap_http_filter(filter: Box<dyn HttpFilter>) -> PipelineFilter {
     PipelineFilter {
         filter_id: 0,
         is_security: false,
         branches: vec![],
         conditions: vec![],
         failure_mode: FailureMode::default(),
-        filter: AnyFilter::Http(Box::new(filter)),
+        filter: AnyFilter::Http(filter),
         name: None,
         response_conditions: vec![],
     }

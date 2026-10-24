@@ -5,7 +5,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use praxis_core::config::{PathMatch, Route};
+use praxis_core::config::{PathMatch, Route, RouteTarget, WeightedClusters};
 use serde::Deserialize;
 
 // -----------------------------------------------------------------------------
@@ -114,8 +114,15 @@ struct RouterRouteConfigRaw {
     #[serde(default)]
     path_prefix: Option<String>,
 
-    /// Name of the cluster to route matched requests to.
-    cluster: Arc<str>,
+    /// Name of the cluster to route matched requests to. Exactly one of
+    /// `cluster` or `weighted_clusters` must be set.
+    #[serde(default)]
+    cluster: Option<Arc<str>>,
+
+    /// Weighted cluster targets with optional priority tiers. Exactly one of
+    /// `cluster` or `weighted_clusters` must be set.
+    #[serde(default)]
+    weighted_clusters: Option<WeightedClusters>,
 
     /// Request headers to match. All specified headers must be present
     /// with matching values (AND semantics, case-sensitive). Headers that
@@ -155,9 +162,11 @@ impl TryFrom<RouterRouteConfigRaw> for RouterRouteConfig {
     type Error = String;
 
     fn try_from(raw: RouterRouteConfigRaw) -> Result<Self, Self::Error> {
+        let path_match = PathMatch::from_parts(raw.path, raw.path_prefix)?;
+        let target = RouteTarget::from_parts(raw.cluster, raw.weighted_clusters, path_match.value())?;
         let route = Route {
-            path_match: PathMatch::from_parts(raw.path, raw.path_prefix)?,
-            cluster: raw.cluster,
+            path_match,
+            target,
             headers: raw.headers,
             host: raw.host,
             retry_policy: raw.retry_policy,

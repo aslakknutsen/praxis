@@ -9,7 +9,10 @@
 //! then select a target cluster. These types are config-only; runtime
 //! matching logic lives in the router filter's `matching` module.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -175,6 +178,206 @@ impl PathMatch {
 // Route
 // -----------------------------------------------------------------------------
 
+/// A route's cluster destination.
+///
+/// Both YAML forms normalize to this one type: `cluster: name` deserializes to
+/// [`Single`] and `weighted_clusters: { targets: [...] }` to [`Weighted`].
+/// Serialization emits the form that was configured.
+///
+/// [`Single`]: RouteTarget::Single
+/// [`Weighted`]: RouteTarget::Weighted
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum RouteTarget {
+    /// Single-target shorthand: route every request to one cluster.
+    Single {
+        /// Name of the cluster to route matched requests to.
+        cluster: Arc<str>,
+    },
+
+    /// Weighted and priority-tiered cluster selection.
+    Weighted {
+        /// Weighted cluster targets.
+        weighted_clusters: WeightedClusters,
+    },
+}
+
+impl RouteTarget {
+    /// Build a target from the two mutually exclusive YAML keys.
+    ///
+    /// `route_label` names the route in the error message.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when both `cluster` and `weighted_clusters` are set,
+    /// or when neither is.
+    pub fn from_parts(
+        cluster: Option<Arc<str>>,
+        weighted_clusters: Option<WeightedClusters>,
+        route_label: &str,
+    ) -> Result<Self, String> {
+        match (cluster, weighted_clusters) {
+            (Some(cluster), None) => Ok(Self::Single { cluster }),
+            (None, Some(weighted_clusters)) => Ok(Self::Weighted { weighted_clusters }),
+            (Some(_), Some(_)) => Err(format!(
+                "route '{route_label}' cannot set both 'cluster' and 'weighted_clusters' (use exactly one)"
+            )),
+            (None, None) => Err(format!(
+                "route '{route_label}' requires either 'cluster' or 'weighted_clusters'"
+            )),
+        }
+    }
+
+    /// Returns `true` when this target uses the weighted form.
+    pub fn is_weighted(&self) -> bool {
+        matches!(self, Self::Weighted { .. })
+    }
+
+    /// The cluster name for the single-target shorthand.
+    pub fn single_cluster(&self) -> Option<&str> {
+        match self {
+            Self::Single { cluster } => Some(cluster),
+            Self::Weighted { .. } => None,
+        }
+    }
+
+    /// Every target name, in configuration order.
+    pub fn target_names(&self) -> Box<dyn Iterator<Item = &Arc<str>> + '_> {
+        match self {
+            Self::Single { cluster } => Box::new(std::iter::once(cluster)),
+            Self::Weighted { weighted_clusters } => {
+                Box::new(weighted_clusters.targets.iter().map(|target| &target.name))
+            },
+        }
+    }
+
+    /// Every target in canonical weighted form.
+    ///
+    /// The single-target shorthand expands to one target with weight `1` and
+    /// priority `0`. This is a configuration-time conversion; the router builds
+    /// its selector once per route, never per request.
+    pub fn targets(&self) -> Vec<WeightedTarget> {
+        match self {
+            Self::Single { cluster } => vec![WeightedTarget {
+                name: Arc::clone(cluster),
+                weight: DEFAULT_TARGET_WEIGHT,
+                priority: 0,
+            }],
+            Self::Weighted { weighted_clusters } => weighted_clusters.targets.clone(),
+        }
+    }
+
+    /// Validate the weighted form; the shorthand cannot be invalid.
+    fn validate(&self, route_label: &str) -> Result<(), String> {
+        let Self::Weighted { weighted_clusters } = self else {
+            return Ok(());
+        };
+        let targets = &weighted_clusters.targets;
+        if targets.is_empty() {
+            return Err(format!(
+                "{route_label}: 'weighted_clusters.targets' must not be empty \
+                 (use 'cluster' for a single target)"
+            ));
+        }
+        Self::validate_targets(route_label, targets)?;
+        Self::validate_total_weight(route_label, targets)
+    }
+
+    /// Validate each target's name and weight, and reject duplicates.
+    fn validate_targets(route_label: &str, targets: &[WeightedTarget]) -> Result<(), String> {
+        let mut seen = HashSet::new();
+        for (index, target) in targets.iter().enumerate() {
+            if target.name.is_empty() {
+                return Err(format!(
+                    "{route_label}: 'weighted_clusters.targets[{index}].name' must not be empty"
+                ));
+            }
+            if !seen.insert(target.name.as_ref()) {
+                return Err(format!(
+                    "{route_label}: 'weighted_clusters.targets' has duplicate name '{}'; \
+                     each cluster may appear at most once",
+                    target.name
+                ));
+            }
+            if target.weight == 0 || target.weight > MAX_TARGET_WEIGHT {
+                return Err(format!(
+                    "{route_label}: 'weighted_clusters.targets[{index}].weight' must be between 1 and \
+                     {MAX_TARGET_WEIGHT} (got {})",
+                    target.weight
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Reject a total weight the smooth-WRR scores cannot represent.
+    fn validate_total_weight(route_label: &str, targets: &[WeightedTarget]) -> Result<(), String> {
+        let mut total: u64 = 0;
+        for target in targets {
+            total = total
+                .checked_add(u64::from(target.weight))
+                .ok_or_else(|| format!("{route_label}: 'weighted_clusters' total weight overflows"))?;
+        }
+        let max_total = u64::try_from(i64::MAX).map_or(u64::MAX, |max| max);
+        if total > max_total {
+            return Err(format!(
+                "{route_label}: 'weighted_clusters' total weight is too large to track"
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl From<&str> for RouteTarget {
+    fn from(cluster: &str) -> Self {
+        Self::Single {
+            cluster: Arc::from(cluster),
+        }
+    }
+}
+
+/// Default weight for a weighted-cluster target.
+pub const DEFAULT_TARGET_WEIGHT: u32 = 1; // equal share unless configured
+
+/// Maximum accepted weight for a weighted-cluster target.
+pub const MAX_TARGET_WEIGHT: u32 = 1000;
+
+/// Serde default for [`WeightedTarget::weight`].
+fn default_target_weight() -> u32 {
+    DEFAULT_TARGET_WEIGHT
+}
+
+/// An ordered set of weighted cluster targets.
+///
+/// Targets sharing a `priority` form one tier. Selection uses the lowest
+/// priority number with a healthy target, then smooth weighted round-robin
+/// within that tier.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WeightedClusters {
+    /// Cluster targets. Must not be empty.
+    pub targets: Vec<WeightedTarget>,
+}
+
+/// One cluster in a weighted route target set.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WeightedTarget {
+    /// Name of the cluster to route matched requests to.
+    pub name: Arc<str>,
+
+    /// Relative weight within the target's priority tier.
+    ///
+    /// Must be in `1..=1000`. The effective share is this weight's fraction of
+    /// its tier, multiplied by the selected endpoint's share within its cluster.
+    #[serde(default = "default_target_weight")]
+    pub weight: u32,
+
+    /// Priority tier; lower numbers are preferred. Defaults to `0`.
+    #[serde(default)]
+    pub priority: u32,
+}
+
 /// A routing rule mapping requests to a cluster.
 ///
 /// ```
@@ -188,7 +391,7 @@ impl PathMatch {
 /// )
 /// .unwrap();
 /// assert_eq!(route.path_match.value(), "/api/");
-/// assert_eq!(&*route.cluster, "backend");
+/// assert_eq!(route.single_cluster(), Some("backend"));
 /// assert!(!route.path_match.is_exact());
 /// assert!(route.host.is_none());
 /// assert!(route.headers.is_none());
@@ -209,6 +412,30 @@ impl PathMatch {
 /// assert!(route.path_match.is_exact());
 /// assert_eq!(route.path_match.value(), "/one");
 /// ```
+///
+/// Weighted targets with a priority-tier fallback:
+///
+/// ```
+/// use praxis_core::config::Route;
+///
+/// let route: Route = serde_yaml::from_str(
+///     r#"
+/// path_prefix: "/"
+/// weighted_clusters:
+///   targets:
+///     - name: stable
+///       weight: 90
+///     - name: canary
+///       weight: 10
+///     - name: dr
+///       priority: 1
+/// "#,
+/// )
+/// .unwrap();
+/// assert!(route.target.is_weighted());
+/// assert_eq!(route.target.targets().len(), 3);
+/// assert_eq!(route.target.targets()[2].priority, 1);
+/// ```
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(try_from = "RouteRaw")]
 pub struct Route {
@@ -216,8 +443,12 @@ pub struct Route {
     #[serde(flatten)]
     pub path_match: PathMatch,
 
-    /// Name of the cluster to route matched requests to.
-    pub cluster: Arc<str>,
+    /// Cluster destination: the `cluster` shorthand or `weighted_clusters`.
+    ///
+    /// Exactly one of the two YAML keys must be set. `cluster: x` is
+    /// equivalent to one target `{ name: x, weight: 1, priority: 0 }`.
+    #[serde(flatten)]
+    pub target: RouteTarget,
 
     /// Request headers to match. All specified headers must be present
     /// with matching values (AND semantics, case-sensitive).
@@ -236,8 +467,8 @@ pub struct Route {
     /// Optional per-route hedged-request policy.
     ///
     /// When `max_attempts` is greater than 1, the route buffers the request,
-    /// races it across healthy endpoints in `cluster`, and returns the first
-    /// 2xx, 3xx, or 4xx response, cancelling the other attempts.
+    /// races it across healthy endpoints in the selected cluster, and returns
+    /// the first 2xx, 3xx, or 4xx response, cancelling the other attempts.
     /// `max_attempts` of 1, `CONNECT`, and `Upgrade` keep a single upstream
     /// attempt. Absent means one upstream attempt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -263,8 +494,15 @@ struct RouteRaw {
     #[serde(default)]
     path_prefix: Option<String>,
 
-    /// Name of the cluster to route matched requests to.
-    cluster: Arc<str>,
+    /// Name of the cluster to route matched requests to. Exactly one of
+    /// `cluster` or `weighted_clusters` must be set.
+    #[serde(default)]
+    cluster: Option<Arc<str>>,
+
+    /// Weighted cluster targets with optional priority tiers. Exactly one of
+    /// `cluster` or `weighted_clusters` must be set.
+    #[serde(default)]
+    weighted_clusters: Option<WeightedClusters>,
 
     /// Request headers to match. All specified headers must be present
     /// with matching values (AND semantics, case-sensitive).
@@ -282,8 +520,8 @@ struct RouteRaw {
     /// Optional per-route hedged-request policy.
     ///
     /// When `max_attempts` is greater than 1, the route buffers the request,
-    /// races it across healthy endpoints in `cluster`, and returns the first
-    /// 2xx, 3xx, or 4xx response, cancelling the other attempts.
+    /// races it across healthy endpoints in the selected cluster, and returns
+    /// the first 2xx, 3xx, or 4xx response, cancelling the other attempts.
     /// `max_attempts` of 1, `CONNECT`, and `Upgrade` keep a single upstream
     /// attempt. Absent means one upstream attempt.
     #[serde(default)]
@@ -291,6 +529,24 @@ struct RouteRaw {
 }
 
 impl Route {
+    /// The cluster name when this route uses the single-target shorthand.
+    ///
+    /// Returns `None` for a weighted route, which may select any of its
+    /// [`targets`](Route::targets).
+    pub fn single_cluster(&self) -> Option<&str> {
+        self.target.single_cluster()
+    }
+
+    /// Every cluster name this route may select, in configuration order.
+    pub fn target_names(&self) -> impl Iterator<Item = &Arc<str>> {
+        self.target.target_names()
+    }
+
+    /// Every target in canonical weighted form (config-time only).
+    pub fn targets(&self) -> Vec<WeightedTarget> {
+        self.target.targets()
+    }
+
     /// Validate cross-field route semantics that the type system does
     /// not enforce: retry-policy timeout bounds and header-match keys.
     ///
@@ -303,6 +559,7 @@ impl Route {
     ///
     /// Returns a message naming the offending field.
     pub fn validate_semantics(&self) -> Result<(), String> {
+        self.target.validate(&format!("route '{}'", self.path_match.value()))?;
         if let Some(policy) = &self.retry_policy {
             policy.validate_timeout_bounds(&format!("route '{}'", self.path_match.value()))?;
         }
@@ -329,9 +586,11 @@ impl TryFrom<RouteRaw> for Route {
     type Error = String;
 
     fn try_from(raw: RouteRaw) -> Result<Self, Self::Error> {
+        let path_match = PathMatch::from_parts(raw.path, raw.path_prefix)?;
+        let target = RouteTarget::from_parts(raw.cluster, raw.weighted_clusters, path_match.value())?;
         let route = Self {
-            path_match: PathMatch::from_parts(raw.path, raw.path_prefix)?,
-            cluster: raw.cluster,
+            path_match,
+            target,
             headers: raw.headers,
             host: raw.host,
             retry_policy: raw.retry_policy,
@@ -368,7 +627,7 @@ cluster: "backend"
         let route: Route = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(route.path_match.value(), "/api", "path value mismatch");
         assert!(!route.path_match.is_exact(), "should be prefix match");
-        assert_eq!(&*route.cluster, "backend", "cluster mismatch");
+        assert_eq!(route.single_cluster(), Some("backend"), "cluster mismatch");
         assert!(route.host.is_none(), "host should be None when omitted");
     }
 
@@ -547,7 +806,9 @@ retry_policy:
             path_match: PathMatch::Prefix {
                 path_prefix: "/api".to_owned(),
             },
-            cluster: Arc::from("backend"),
+            target: RouteTarget::Single {
+                cluster: Arc::from("backend"),
+            },
             headers: None,
             host: None,
             retry_policy: None,
@@ -591,5 +852,146 @@ hedge_policy:
             path: "/one".to_owned(),
         };
         assert_eq!(exact.len(), 4, "exact length mismatch");
+    }
+
+    fn weighted_route_yaml(targets: &str) -> String {
+        format!("path_prefix: \"/\"\nweighted_clusters:\n  targets:\n{targets}")
+    }
+
+    #[test]
+    fn parses_weighted_clusters() {
+        let yaml = weighted_route_yaml(
+            "    - name: stable\n      weight: 90\n    - name: canary\n      weight: 10\n    - name: dr\n      priority: 1\n",
+        );
+        let route: Route = serde_yaml::from_str(&yaml).unwrap();
+        assert!(route.target.is_weighted(), "weighted form should be recognized");
+        assert_eq!(route.single_cluster(), None, "weighted routes have no single cluster");
+
+        let targets = route.targets();
+        assert_eq!(targets.len(), 3, "all targets should be preserved");
+        assert_eq!(&*targets[0].name, "stable", "first target name");
+        assert_eq!(targets[0].weight, 90, "first target weight");
+        assert_eq!(targets[0].priority, 0, "priority defaults to zero");
+        assert_eq!(targets[2].weight, DEFAULT_TARGET_WEIGHT, "weight defaults to one");
+        assert_eq!(targets[2].priority, 1, "explicit priority is kept");
+    }
+
+    #[test]
+    fn weighted_clusters_rejects_both_forms() {
+        let yaml = r#"
+path_prefix: "/"
+cluster: stable
+weighted_clusters:
+  targets:
+    - name: canary
+"#;
+        let err = serde_yaml::from_str::<Route>(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("both 'cluster' and 'weighted_clusters'"),
+            "setting both target forms must be rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn weighted_clusters_rejects_neither_form() {
+        let err = serde_yaml::from_str::<Route>("path_prefix: \"/\"\n").unwrap_err();
+        assert!(
+            err.to_string().contains("either 'cluster' or 'weighted_clusters'"),
+            "a route without a target must be rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn weighted_clusters_rejects_empty_targets() {
+        let yaml = weighted_route_yaml("    []\n");
+        let err = serde_yaml::from_str::<Route>(&yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("must not be empty"),
+            "an empty weighted target list must be rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn weighted_clusters_rejects_duplicate_names() {
+        let yaml = weighted_route_yaml("    - name: stable\n    - name: stable\n");
+        let err = serde_yaml::from_str::<Route>(&yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("duplicate name 'stable'"),
+            "duplicate target names must be rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn weighted_clusters_rejects_out_of_range_weights() {
+        for weight in ["0", "1001"] {
+            let yaml = weighted_route_yaml(&format!("    - name: stable\n      weight: {weight}\n"));
+            let err = serde_yaml::from_str::<Route>(&yaml).unwrap_err();
+            assert!(
+                err.to_string().contains("weight' must be between 1 and 1000"),
+                "weight {weight} must be rejected: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn weighted_clusters_rejects_empty_name() {
+        let yaml = weighted_route_yaml("    - name: \"\"\n");
+        let err = serde_yaml::from_str::<Route>(&yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("name' must not be empty"),
+            "an empty target name can never match a cluster: {err}"
+        );
+    }
+
+    #[test]
+    fn weighted_clusters_rejects_unknown_fields() {
+        let yaml = weighted_route_yaml("    - name: stable\n      wieght: 2\n");
+        let err = serde_yaml::from_str::<Route>(&yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("wieght") || err.to_string().contains("unknown field"),
+            "typoed target keys must be rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn cluster_shorthand_round_trips_as_shorthand() {
+        let yaml = "path_prefix: /api\ncluster: backend\n";
+        let route: Route = serde_yaml::from_str(yaml).unwrap();
+        let out = serde_yaml::to_string(&route).unwrap();
+        assert!(out.contains("cluster: backend"), "shorthand stays shorthand: {out}");
+        assert!(
+            !out.contains("weighted_clusters"),
+            "shorthand must not serialize the general form: {out}"
+        );
+    }
+
+    #[test]
+    fn weighted_clusters_round_trips_as_object() {
+        let yaml = weighted_route_yaml(
+            "    - name: stable\n      weight: 90\n    - name: canary\n      weight: 10\n      priority: 2\n",
+        );
+        let route: Route = serde_yaml::from_str(&yaml).unwrap();
+        let out = serde_yaml::to_string(&route).unwrap();
+        assert!(
+            out.contains("weighted_clusters:"),
+            "weighted form keeps its object shape: {out}"
+        );
+        let reparsed: Route = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(
+            reparsed.targets(),
+            route.targets(),
+            "serialization must round-trip every target"
+        );
+    }
+
+    #[test]
+    fn weighted_single_target_behaves_like_cluster() {
+        let yaml = weighted_route_yaml("    - name: only\n");
+        let route: Route = serde_yaml::from_str(&yaml).unwrap();
+        let targets = route.targets();
+        assert_eq!(targets.len(), 1, "one configured target");
+        assert_eq!(&*targets[0].name, "only");
+        assert_eq!(targets[0].weight, DEFAULT_TARGET_WEIGHT);
+        assert_eq!(targets[0].priority, 0);
     }
 }
