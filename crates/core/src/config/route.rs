@@ -559,26 +559,48 @@ impl Route {
     ///
     /// Returns a message naming the offending field.
     pub fn validate_semantics(&self) -> Result<(), String> {
-        self.target.validate(&format!("route '{}'", self.path_match.value()))?;
+        let label = self.error_label();
+        self.target.validate(&label)?;
         if let Some(policy) = &self.retry_policy {
-            policy.validate_timeout_bounds(&format!("route '{}'", self.path_match.value()))?;
+            policy.validate_timeout_bounds(&label)?;
         }
         if let Some(headers) = &self.headers
             && headers.keys().any(String::is_empty)
         {
             return Err(format!(
-                "route '{}': header match key must not be empty (an empty header name can never match)",
-                self.path_match.value()
+                "{label}: header match key must not be empty (an empty header name can never match)"
             ));
         }
         if self.host.as_ref().is_some_and(String::is_empty) {
             return Err(format!(
-                "route '{}': host must not be empty (an empty host can never match; \
-                 omit 'host' to match any host)",
-                self.path_match.value()
+                "{label}: host must not be empty (an empty host can never match; \
+                 omit 'host' to match any host)"
             ));
         }
         Ok(())
+    }
+
+    /// Label naming the constraints that distinguish this route in errors.
+    ///
+    /// Routes that share a path are still distinct when they match different
+    /// hosts or headers, so those constraints are part of the label. Header
+    /// match values are omitted: they may hold credentials, and the name alone
+    /// separates the routes.
+    fn error_label(&self) -> String {
+        let path = self.path_match.value();
+        let mut details = Vec::new();
+        if let Some(host) = &self.host {
+            details.push(format!("host '{host}'"));
+        }
+        if let Some(headers) = &self.headers {
+            let mut names: Vec<&str> = headers.keys().map(String::as_str).collect();
+            names.sort_unstable();
+            details.push(format!("headers [{}]", names.join(", ")));
+        }
+        if details.is_empty() {
+            return format!("route '{path}'");
+        }
+        format!("route '{path}' ({})", details.join("; "))
     }
 }
 
@@ -918,6 +940,30 @@ weighted_clusters:
         assert!(
             err.to_string().contains("duplicate name 'stable'"),
             "duplicate target names must be rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn weighted_errors_name_the_route_host_and_header_names() {
+        let yaml = r#"
+path_prefix: "/api"
+host: "api.example.com"
+headers:
+  x-tenant: "acme"
+  x-api-key: "secret"
+weighted_clusters:
+  targets:
+    - name: stable
+    - name: stable
+"#;
+        let err = serde_yaml::from_str::<Route>(yaml).unwrap_err().to_string();
+        assert!(
+            err.contains("route '/api' (host 'api.example.com'; headers [x-api-key, x-tenant])"),
+            "the error must identify the route by its match constraints: {err}"
+        );
+        assert!(
+            !err.contains("secret"),
+            "header match values must not leak into errors: {err}"
         );
     }
 
