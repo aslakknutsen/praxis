@@ -134,6 +134,14 @@ impl ClusterSelector {
         drop(scores);
         self.targets.get(winner_index).map(|target| Arc::clone(&target.name))
     }
+
+    /// Read a target's current smooth-WRR score (tests only).
+    #[cfg(test)]
+    fn score_of(&self, name: &str) -> Option<i64> {
+        let index = self.targets.iter().position(|target| &*target.name == name)?;
+        let scores = self.scores.lock().unwrap_or_else(PoisonError::into_inner);
+        scores.get(index).copied()
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -288,20 +296,32 @@ mod tests {
     }
 
     #[test]
-    fn recovered_target_does_not_win_on_stale_score() {
+    fn ineligible_target_forfeits_its_stale_score() {
         let selector = ClusterSelector::new(vec![target("a", 1, 0), target("b", 1, 0)]);
-        let unhealthy_a = registry(&[("a", 1, &[0]), ("b", 1, &[])]);
-        // `b` accumulates score while `a` is excluded.
-        for _ in 0..5 {
-            assert_eq!(selector.select(Some(&unhealthy_a)).as_deref(), Some("b"));
-        }
         let both_healthy = registry(&[("a", 1, &[]), ("b", 1, &[])]);
-        let first = selector.select(Some(&both_healthy));
-        assert_eq!(
-            first.as_deref(),
-            Some("a"),
-            "a recovered target starts from zero, not a stale negative or positive score"
+
+        // The opening tie goes to `a`, which pays the tier total and starts the
+        // next turn with a negative score.
+        assert_eq!(selector.select(Some(&both_healthy)).as_deref(), Some("a"));
+        assert!(
+            selector.score_of("a").is_some_and(|score| score < 0),
+            "the winner should carry a negative score into the next turn"
         );
+
+        // While `a` is unhealthy every turn goes to `b`; `a`'s score must be
+        // reset rather than kept for its recovery.
+        let only_b = registry(&[("a", 1, &[0]), ("b", 1, &[])]);
+        assert_eq!(selector.select(Some(&only_b)).as_deref(), Some("b"));
+        assert_eq!(
+            selector.score_of("a"),
+            Some(0),
+            "an ineligible target must not carry its old score"
+        );
+
+        // `b` holds the higher score after the reset, so it wins the first
+        // recovered turn and `a` follows on the next one.
+        assert_eq!(selector.select(Some(&both_healthy)).as_deref(), Some("b"));
+        assert_eq!(selector.select(Some(&both_healthy)).as_deref(), Some("a"));
     }
 
     #[test]
