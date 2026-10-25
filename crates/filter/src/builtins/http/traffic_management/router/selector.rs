@@ -58,11 +58,12 @@ impl ClusterSelector {
 
     /// Select a cluster, honoring cluster health when a registry is available.
     ///
-    /// Tiers are tried in order, and the first one that yields an eligible
-    /// target provides the cluster. Because eligibility is re-checked while the
-    /// scores are held, a health change that empties a tier spills to the next
-    /// one instead of failing the request. Targets outside the winning tier
-    /// have their scores reset, so a skipped tier cannot win later on a stale
+    /// Tiers are tried in order, and the first one with an eligible target
+    /// provides the cluster. A tier that cannot serve leaves the scores of
+    /// other tiers alone, so a fallback tier keeps its rotation for the next
+    /// request; a health change that empties a tier spills to the next one
+    /// instead of failing the request. Once a tier serves, targets outside it
+    /// have their scores reset so a skipped tier cannot win later on a stale
     /// score.
     ///
     /// Returns `None` only when the selector was built with no targets, which
@@ -104,10 +105,16 @@ impl ClusterSelector {
 
     /// Smooth weighted round-robin across `tier`.
     ///
-    /// `registry: None` disables eligibility filtering (panic mode). Targets
-    /// outside the active set have their score zeroed so a target that was
-    /// skipped, or left an inactive tier, cannot win later on a stale score.
+    /// `registry: None` disables eligibility filtering (panic mode). A tier
+    /// with no eligible target returns `None` without touching the scores of
+    /// other tiers: the caller may try a lower tier next, and resetting that
+    /// tier here would restart its rotation on every request. Targets outside a
+    /// serving tier have their score zeroed so a target that was skipped, or
+    /// left an inactive tier, cannot win later on a stale score.
     fn weighted_select(&self, tier: &[usize], registry: Option<&HealthRegistry>) -> Option<Arc<str>> {
+        if !tier.iter().any(|&index| self.eligible(index, registry)) {
+            return None;
+        }
         // Recover a poisoned lock: scores are advisory, and failing the request
         // would be worse than continuing with possibly inconsistent state.
         let mut scores = self.scores.lock().unwrap_or_else(PoisonError::into_inner);
@@ -238,10 +245,29 @@ mod tests {
 
     #[test]
     fn fully_unhealthy_tier_spills_to_next() {
-        let selector = ClusterSelector::new(vec![target("stable", 1, 0), target("canary", 1, 0), target("dr", 1, 1)]);
-        let registry = registry(&[("stable", 1, &[0]), ("canary", 1, &[0]), ("dr", 1, &[])]);
+        let selector = ClusterSelector::new(vec![
+            target("stable", 1, 0),
+            target("canary", 1, 0),
+            target("dr-a", 1, 1),
+            target("dr-b", 1, 1),
+        ]);
+        let registry = registry(&[
+            ("stable", 1, &[0]),
+            ("canary", 1, &[0]),
+            ("dr-a", 1, &[]),
+            ("dr-b", 1, &[]),
+        ]);
         let seen = counts(&selector, Some(&registry), 10);
-        assert_eq!(seen.get("dr"), Some(&10), "only the failover tier is healthy: {seen:?}");
+        assert_eq!(
+            seen.get("dr-a"),
+            Some(&5),
+            "the failover tier must keep its smooth-WRR rotation: {seen:?}"
+        );
+        assert_eq!(
+            seen.get("dr-b"),
+            Some(&5),
+            "the failover tier must split evenly between its targets: {seen:?}"
+        );
         assert_eq!(
             seen.get("stable"),
             None,
