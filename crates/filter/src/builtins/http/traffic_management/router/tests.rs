@@ -242,6 +242,38 @@ async fn on_request_excludes_weighted_target_with_no_healthy_endpoints() {
     }
 }
 
+#[tokio::test]
+async fn on_request_routes_shorthand_route_despite_unhealthy_cluster() {
+    use praxis_core::health::{ClusterHealthEntry, EndpointHealth, HealthRegistry};
+
+    let router = make_router(vec![prefix_route("/", "backend")]);
+    let endpoint = EndpointHealth::new();
+    endpoint.mark_unhealthy();
+    let registry: HealthRegistry = Arc::new(HashMap::from([(
+        Arc::from("backend"),
+        Arc::new(ClusterHealthEntry::new(
+            vec![endpoint],
+            vec![Arc::from("10.0.0.1:80")],
+            None,
+            None,
+        )),
+    )]));
+
+    let req = crate::test_utils::make_request(http::Method::GET, "/");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    ctx.health_registry = Some(&registry);
+    assert!(
+        matches!(router.on_request(&mut ctx).await.unwrap(), FilterAction::Continue),
+        "the shorthand route should continue the pipeline"
+    );
+    assert_eq!(
+        ctx.cluster.as_deref(),
+        Some("backend"),
+        "the cluster shorthand must not be health-gated at the router; endpoint health stays with \
+         the load balancer"
+    );
+}
+
 #[test]
 fn empty_route_table_still_declares_cluster_selection() {
     let router = make_router(vec![]);
