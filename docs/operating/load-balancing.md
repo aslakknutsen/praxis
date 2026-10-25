@@ -292,11 +292,14 @@ and slow start, is unchanged.
 
 Route-target weights are static. The selected
 cluster is sticky for the request, including
-retries, but cluster selection happens before
-endpoint selection, so it does not honor a
-downstream consistent-hash, ring-hash, or maglev
-affinity: the same request key can land in
-different clusters across requests.
+retries, but not across router re-entry: a branch
+chain's backward `ReEnter` runs the router again,
+so for a weighted route another target is selected
+and another weighted turn is consumed. Cluster
+selection happens before endpoint selection, so it
+does not honor a downstream consistent-hash,
+ring-hash, or maglev affinity: the same request key
+can land in different clusters across requests.
 
 ## Health-Aware Routing
 

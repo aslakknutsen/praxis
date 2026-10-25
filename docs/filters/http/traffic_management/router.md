@@ -13,7 +13,7 @@ Sets `ctx.cluster` for downstream filters but does not pick an endpoint or forwa
 
 A route names either one `cluster` or a `weighted_clusters` target set. Weighted targets are grouped by `priority`; the router uses the lowest-priority-number tier with at least one healthy target (a target is healthy when its cluster has at least one healthy endpoint), then selects within that tier by smooth weighted round-robin. It spills to the next tier only when the current tier has no healthy target. Endpoint weights inside the selected cluster apply on top, so the effective share is `route_target_share * endpoint_share_within_cluster`.
 
-The selected cluster is sticky for the request, including retries. Cluster selection happens before endpoint selection, so it does not honor a downstream load balancer's hash-based affinity: the same request key can land in different clusters across requests.
+The selected cluster is sticky for the request, including retries, but not across router re-entry: a branch chain's backward `ReEnter` runs the router again, so the route is matched and, for a weighted route, another target is selected, consuming another weighted turn. Cluster selection happens before endpoint selection, so it does not honor a downstream load balancer's hash-based affinity: the same request key can land in different clusters across requests.
 
 Longest prefix wins. Routes without `host` match any host. Header restrictions use AND semantics with case-sensitive matching.
 
