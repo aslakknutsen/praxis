@@ -277,13 +277,18 @@ mod tests {
 
     #[test]
     fn all_unhealthy_enters_panic_mode_on_primary_tier() {
-        let selector = ClusterSelector::new(vec![target("stable", 1, 0), target("dr", 1, 1)]);
-        let registry = registry(&[("stable", 1, &[0]), ("dr", 1, &[0])]);
+        let selector = ClusterSelector::new(vec![target("stable", 1, 0), target("canary", 1, 0), target("dr", 1, 1)]);
+        let registry = registry(&[("stable", 1, &[0]), ("canary", 1, &[0]), ("dr", 1, &[0])]);
         let seen = counts(&selector, Some(&registry), 10);
         assert_eq!(
             seen.get("stable"),
-            Some(&10),
-            "panic mode must use the highest-priority tier: {seen:?}"
+            Some(&5),
+            "panic mode must rotate within the highest-priority tier: {seen:?}"
+        );
+        assert_eq!(
+            seen.get("canary"),
+            Some(&5),
+            "panic mode must rotate within the highest-priority tier: {seen:?}"
         );
         assert_eq!(seen.get("dr"), None, "panic mode must not pick a lower tier: {seen:?}");
     }
