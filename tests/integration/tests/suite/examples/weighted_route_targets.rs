@@ -17,8 +17,10 @@ fn weighted_route_targets_split_and_fail_over() {
     let stable_port = stable_guard.port();
     let canary_guard = start_backend_with_shutdown("canary");
     let canary_port = canary_guard.port();
-    let dr_guard = start_backend_with_shutdown("dr");
-    let dr_port = dr_guard.port();
+    let dr_a_guard = start_backend_with_shutdown("dr-a");
+    let dr_a_port = dr_a_guard.port();
+    let dr_b_guard = start_backend_with_shutdown("dr-b");
+    let dr_b_port = dr_b_guard.port();
 
     let proxy_port = free_port();
     let config = super::load_example_config(
@@ -27,7 +29,8 @@ fn weighted_route_targets_split_and_fail_over() {
         HashMap::from([
             ("127.0.0.1:3001", stable_port),
             ("127.0.0.1:3002", canary_port),
-            ("127.0.0.1:3003", dr_port),
+            ("127.0.0.1:3003", dr_a_port),
+            ("127.0.0.1:3004", dr_b_port),
         ]),
     );
     // `start_full_proxy` also spawns the active health-check tasks the
@@ -43,7 +46,7 @@ fn weighted_route_targets_split_and_fail_over() {
         match body.as_str() {
             "stable" => stable_count += 1,
             "canary" => canary_count += 1,
-            "dr" => panic!("the priority-1 fallback must not serve while priority 0 is healthy"),
+            "dr-a" | "dr-b" => panic!("the priority-1 fallback must not serve while priority 0 is healthy"),
             other => panic!("unexpected body: {other}"),
         }
     }
@@ -60,7 +63,7 @@ fn weighted_route_targets_split_and_fail_over() {
     );
 
     // Both priority-0 clusters lose every healthy endpoint, so the router must
-    // spill to the priority-1 `dr` tier.
+    // spill to the priority-1 `dr-a`/`dr-b` tier.
     drop(stable_guard);
     drop(canary_guard);
 
@@ -69,7 +72,7 @@ fn weighted_route_targets_split_and_fail_over() {
     for _ in 0..100 {
         let (status, body) = http_get(proxy.addr(), "/", None);
         last = format!("{status} {body:?}");
-        if status == 200 && body == "dr" {
+        if status == 200 && (body == "dr-a" || body == "dr-b") {
             fell_back = true;
             break;
         }
@@ -80,9 +83,20 @@ fn weighted_route_targets_split_and_fail_over() {
         "traffic should spill to the dr tier once both priority-0 clusters have no healthy endpoint (last: {last})"
     );
 
-    for _ in 0..5 {
+    let mut dr_a_count = 0_u32;
+    let mut dr_b_count = 0_u32;
+    for _ in 0..10 {
         let (status, body) = http_get(proxy.addr(), "/", None);
         assert_eq!(status, 200, "fallback request should return 200");
-        assert_eq!(body, "dr", "all traffic should stay on the fallback tier");
+        match body.as_str() {
+            "dr-a" => dr_a_count += 1,
+            "dr-b" => dr_b_count += 1,
+            other => panic!("all traffic should stay on the fallback tier, got {other}"),
+        }
     }
+    assert_eq!(
+        (dr_a_count, dr_b_count),
+        (5, 5),
+        "the 1:1 fallback tier must rotate between its targets, not pin the first one"
+    );
 }

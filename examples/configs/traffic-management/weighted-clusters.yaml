@@ -2,9 +2,9 @@
 #
 # Routes across separate clusters with a weighted split and a
 # priority-tier fallback. The router sends ~90% of requests to
-# `stable` and ~10% to `canary` (both priority 0), and uses `dr`
-# (priority 1) only when every priority-0 cluster has no healthy
-# endpoint.
+# `stable` and ~10% to `canary` (both priority 0), and spills to
+# `dr-a` and `dr-b` (priority 1, 1:1) only when every priority-0
+# cluster has no healthy endpoint.
 #
 # Weighted clusters differ from endpoint weights: each cluster owns
 # its own TLS identity and options, so backends that cannot share one
@@ -26,9 +26,9 @@
 #   └────────┘ ~90%           └────────┘ ~10%
 #       │
 #       │ both priority-0 clusters unhealthy
-#   ┌───▼────┐
-#   │   dr   │  :3003
-#   └────────┘ 100%
+#   ┌───▼────┐                ┌─────────┐
+#   │ dr-a   │  :3003         │ dr-b    │  :3004
+#   └────────┘ ~50%           └─────────┘ ~50%
 #
 # Usage:
 #   cargo run -p praxis-proxy -- \
@@ -70,9 +70,21 @@ clusters:
       healthy_threshold: 1
       unhealthy_threshold: 1
 
-  - name: dr
+  - name: dr-a
     endpoints:
       - "127.0.0.1:3003"
+    health_check:
+      type: http
+      path: "/healthz"
+      expected_status: 200
+      interval_ms: 200
+      timeout_ms: 100
+      healthy_threshold: 1
+      unhealthy_threshold: 1
+
+  - name: dr-b
+    endpoints:
+      - "127.0.0.1:3004"
     health_check:
       type: http
       path: "/healthz"
@@ -96,7 +108,10 @@ filter_chains:
                 - name: canary
                   weight: 10
                   priority: 0
-                - name: dr
+                - name: dr-a
+                  weight: 1
+                  priority: 1
+                - name: dr-b
                   weight: 1
                   priority: 1
 
@@ -110,10 +125,14 @@ filter_chains:
             load_balancer_strategy: round_robin
             endpoints:
               - address: "127.0.0.1:3002"
-          - name: dr
+          - name: dr-a
             load_balancer_strategy: round_robin
             endpoints:
               - address: "127.0.0.1:3003"
+          - name: dr-b
+            load_balancer_strategy: round_robin
+            endpoints:
+              - address: "127.0.0.1:3004"
 
 insecure_options:
   allow_private_endpoints: true     # example proxies to local backends
