@@ -58,6 +58,13 @@ impl ClusterSelector {
 
     /// Select a cluster, honoring cluster health when a registry is available.
     ///
+    /// Tiers are tried in order, and the first one that yields an eligible
+    /// target provides the cluster. Because eligibility is re-checked while the
+    /// scores are held, a health change that empties a tier spills to the next
+    /// one instead of failing the request. Targets outside the winning tier
+    /// have their scores reset, so a skipped tier cannot win later on a stale
+    /// score.
+    ///
     /// Returns `None` only when the selector was built with no targets, which
     /// route validation rejects.
     pub(crate) fn select(&self, registry: Option<&HealthRegistry>) -> Option<Arc<str>> {
@@ -65,17 +72,16 @@ impl ClusterSelector {
             return None;
         }
 
-        match self
-            .tiers
-            .iter()
-            .find(|tier| tier.iter().any(|&index| self.eligible(index, registry)))
-        {
-            Some(tier) => self.weighted_select(tier, registry),
-            // Panic mode mirrors endpoint priority handling: no tier has a
-            // healthy target, so use the highest-priority tier regardless of
-            // health and let the downstream load balancer panic too.
-            None => self.tiers.first().and_then(|tier| self.weighted_select(tier, None)),
+        for tier in &self.tiers {
+            if let Some(cluster) = self.weighted_select(tier, registry) {
+                return Some(cluster);
+            }
         }
+
+        // Panic mode mirrors endpoint priority handling: no tier has a healthy
+        // target, so use the highest-priority tier regardless of health and let
+        // the downstream load balancer panic too.
+        self.tiers.first().and_then(|tier| self.weighted_select(tier, None))
     }
 
     /// Whether a target's cluster can serve traffic.
