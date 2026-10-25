@@ -36,6 +36,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   single target. Route-target weights compose multiplicatively with endpoint
   weights; endpoint load-balancing behavior is unchanged.
 
+### Changed
+
+- **Breaking:** Rust API: `Route::cluster` is replaced by `Route::target`, a
+  `RouteTarget` holding either the `cluster` shorthand or the
+  `weighted_clusters` target set. Rust consumers that build `Route` values
+  with struct literals or read `cluster` directly must move to `target`;
+  `Route::single_cluster()` reads the shorthand's cluster name. The YAML
+  `cluster:` key is unchanged.
+
 ### Fixed
 
 - The FIPS runtime probe selects the Pingora backend when compiling its
