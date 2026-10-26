@@ -17,7 +17,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 // -----------------------------------------------------------------------------
 
 /// A monotonic cursor for weighted round-robin selection.
+///
+/// The cursor is cache-line aligned so adjacent tiers do not share its line.
+/// A single atomic still serializes its own tier's writers; sharding the cursor
+/// per worker remains a benchmark-driven follow-up rather than a speculative
+/// change to the distribution.
 #[derive(Debug, Default)]
+#[repr(align(64))]
 pub(crate) struct WeightedCycle {
     /// Number of selection turns taken so far.
     counter: AtomicU64,
@@ -94,7 +100,10 @@ where
         return None;
     }
     let slot = tick.checked_rem(total)?;
-    pick_weighted(slot, candidates.into_iter().filter(|(candidate, _)| eligible(*candidate)))
+    pick_weighted(
+        slot,
+        candidates.into_iter().filter(|(candidate, _)| eligible(*candidate)),
+    )
 }
 
 /// Advance `cycle` and pick an eligible candidate.
@@ -113,7 +122,10 @@ where
         return None;
     }
     let slot = cycle.next().checked_rem(total)?;
-    pick_weighted(slot, candidates.into_iter().filter(|(candidate, _)| eligible(*candidate)))
+    pick_weighted(
+        slot,
+        candidates.into_iter().filter(|(candidate, _)| eligible(*candidate)),
+    )
 }
 
 /// Advance `cycle` over a pre-computed weight total, with no eligibility pass.
