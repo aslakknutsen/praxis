@@ -78,19 +78,18 @@ impl CompiledTargets {
     pub(crate) fn compile(targets: &RouteTargets) -> Self {
         let mut by_priority: BTreeMap<u32, Vec<CompiledTarget>> = BTreeMap::new();
         for target in targets.targets() {
-            by_priority
-                .entry(target.priority)
-                .or_default()
-                .push(CompiledTarget {
-                    name: target.name.shared(),
-                    weight: u64::from(target.weight.get()),
-                    health: None,
-                });
+            by_priority.entry(target.priority).or_default().push(CompiledTarget {
+                name: target.name.shared(),
+                weight: u64::from(target.weight.get()),
+                health: None,
+            });
         }
         let tiers = by_priority
             .into_iter()
             .map(|(priority, targets)| {
-                let total_weight = targets.iter().fold(0_u64, |total, target| total.saturating_add(target.weight));
+                let total_weight = targets
+                    .iter()
+                    .fold(0_u64, |total, target| total.saturating_add(target.weight));
                 Tier {
                     priority,
                     cycle: (targets.len() > 1).then(WeightedCycle::new),
@@ -174,7 +173,7 @@ impl CompiledTargets {
     /// Try each tier in order, then fan out to the primary tier in panic mode.
     fn try_select(&self) -> Option<Arc<str>> {
         for tier in &self.tiers {
-            if let Some(cluster) = self.select_from_tier(tier, true) {
+            if let Some(cluster) = Self::select_from_tier(tier, true) {
                 return Some(cluster);
             }
         }
@@ -182,13 +181,11 @@ impl CompiledTargets {
         // Panic mode mirrors endpoint priority handling: no tier has a healthy
         // target, so use the highest-priority tier regardless of health and let
         // the downstream load balancer panic too.
-        self.tiers
-            .first()
-            .and_then(|tier| self.select_from_tier(tier, false))
+        self.tiers.first().and_then(|tier| Self::select_from_tier(tier, false))
     }
 
     /// Weighted round-robin across one pre-computed tier.
-    fn select_from_tier(&self, tier: &Tier, require_health: bool) -> Option<Arc<str>> {
+    fn select_from_tier(tier: &Tier, require_health: bool) -> Option<Arc<str>> {
         let Some(cycle) = &tier.cycle else {
             let target = tier.targets.first()?;
             return target.is_eligible(require_health).then(|| Arc::clone(&target.name));
@@ -212,9 +209,7 @@ impl CompiledTarget {
         if !require_health {
             return true;
         }
-        self.health
-            .as_ref()
-            .is_none_or(|entry| entry.is_available())
+        self.health.as_ref().is_none_or(|entry| entry.is_available())
     }
 }
 
@@ -234,14 +229,14 @@ impl CompiledTarget {
 mod tests {
     use std::collections::HashMap;
 
-    use praxis_core::{config::TargetWeight, health::EndpointHealth};
+    use praxis_core::{config::Weight, health::EndpointHealth};
 
     use super::*;
 
     fn target(name: &str, weight: u16, priority: u32) -> praxis_core::config::WeightedTarget {
         praxis_core::config::WeightedTarget {
             name: name.into(),
-            weight: TargetWeight::try_from(weight).unwrap(),
+            weight: Weight::from(weight),
             priority,
         }
     }
@@ -446,11 +441,7 @@ mod tests {
             .unhealthy_priority_targets()
             .map(|(target, _)| target.name.as_ref())
             .collect();
-        assert_eq!(
-            diagnosed,
-            vec!["a"],
-            "the last tier has nothing below it to spill to"
-        );
+        assert_eq!(diagnosed, vec!["a"], "the last tier has nothing below it to spill to");
     }
 
     #[test]

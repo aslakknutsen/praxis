@@ -18,7 +18,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use super::{HedgePolicy, RetryPolicy};
+use super::{HedgePolicy, RetryPolicy, Weight};
 
 // -----------------------------------------------------------------------------
 // PathMatch
@@ -282,7 +282,7 @@ impl RouteTargets {
     pub fn single(cluster: ClusterName) -> Self {
         Self(Arc::from([WeightedTarget {
             name: cluster,
-            weight: TargetWeight::DEFAULT,
+            weight: Weight::ONE,
             priority: 0,
         }]))
     }
@@ -348,8 +348,14 @@ impl RouteTargets {
                     target.name
                 ));
             }
+            let weight = target.weight.get();
+            if !(MIN_TARGET_WEIGHT..=MAX_TARGET_WEIGHT).contains(&weight) {
+                return Err(format!(
+                    "'weight' must be between {MIN_TARGET_WEIGHT} and {MAX_TARGET_WEIGHT} (got {weight})"
+                ));
+            }
             total = total
-                .checked_add(u64::from(target.weight.get()))
+                .checked_add(u64::from(weight))
                 .ok_or_else(|| "'weighted_clusters' total weight overflows".to_owned())?;
         }
         if total > MAX_TOTAL_TARGET_WEIGHT {
@@ -368,16 +374,11 @@ impl Serialize for RouteTargets {
 
         let mut map = serializer.serialize_map(Some(1))?;
         match self.0.as_ref() {
-            [target] if target.weight == TargetWeight::DEFAULT && target.priority == 0 => {
+            [target] if target.weight == Weight::ONE && target.priority == 0 => {
                 map.serialize_entry("cluster", &target.name)?;
             },
             targets => {
-                map.serialize_entry(
-                    "weighted_clusters",
-                    &WeightedClustersView {
-                        targets,
-                    },
-                )?;
+                map.serialize_entry("weighted_clusters", &WeightedClustersView { targets })?;
             },
         }
         map.end()
@@ -397,46 +398,15 @@ struct WeightedClustersView<'targets> {
     targets: &'targets [WeightedTarget],
 }
 
-/// A validated route-target weight in `1..=1000`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
-#[serde(try_from = "u16")]
-pub struct TargetWeight(u16);
+/// Smallest accepted route-target weight.
+///
+/// The shared [`Weight`] type carries the representation; route validation
+/// enforces the narrower range because a zero-weight route target would make
+/// its cluster unreachable.
+const MIN_TARGET_WEIGHT: u32 = 1;
 
-impl TargetWeight {
-    /// Weight used when a target does not set one.
-    pub const DEFAULT: Self = Self(1);
-    /// Largest accepted weight.
-    pub const MAX: Self = Self(1000);
-
-    /// The raw configured value.
-    pub fn get(self) -> u16 {
-        self.0
-    }
-}
-
-impl Default for TargetWeight {
-    fn default() -> Self {
-        Self::DEFAULT
-    }
-}
-
-impl TryFrom<u16> for TargetWeight {
-    type Error = String;
-
-    fn try_from(value: u16) -> Result<Self, Self::Error> {
-        if (1..=Self::MAX.0).contains(&value) {
-            Ok(Self(value))
-        } else {
-            Err(format!("'weight' must be between 1 and 1000 (got {value})"))
-        }
-    }
-}
-
-impl From<TargetWeight> for u16 {
-    fn from(weight: TargetWeight) -> Self {
-        weight.0
-    }
-}
+/// Largest accepted route-target weight.
+const MAX_TARGET_WEIGHT: u32 = 1000;
 
 /// Largest total route-target weight accepted for one route.
 ///
@@ -465,10 +435,11 @@ pub struct WeightedTarget {
 
     /// Relative weight within the target's priority tier.
     ///
-    /// Must be in `1..=1000`. The effective share is this weight's fraction of
-    /// its tier, multiplied by the selected endpoint's share within its cluster.
+    /// Validated to `1..=1000` when the route target set is built. The
+    /// effective share is this weight's fraction of its tier, multiplied by
+    /// the selected endpoint's share within its cluster.
     #[serde(default)]
-    pub weight: TargetWeight,
+    pub weight: Weight,
 
     /// Priority tier; lower numbers are preferred. Defaults to `0`.
     #[serde(default)]
@@ -976,8 +947,8 @@ hedge_policy:
         format!("path_prefix: \"/\"\nweighted_clusters:\n  targets:\n{targets}")
     }
 
-    fn weight(value: u16) -> TargetWeight {
-        TargetWeight::try_from(value).unwrap()
+    fn weight(value: u16) -> Weight {
+        Weight::new(u32::from(value))
     }
 
     #[test]
@@ -992,7 +963,7 @@ hedge_policy:
         assert_eq!(&*targets[0].name, "stable", "first target name");
         assert_eq!(targets[0].weight, weight(90), "first target weight");
         assert_eq!(targets[0].priority, 0, "priority defaults to zero");
-        assert_eq!(targets[2].weight, TargetWeight::DEFAULT, "weight defaults to one");
+        assert_eq!(targets[2].weight, Weight::ONE, "weight defaults to one");
         assert_eq!(targets[2].priority, 1, "explicit priority is kept");
     }
 
@@ -1144,7 +1115,7 @@ weighted_clusters:
         let targets = route.targets();
         assert_eq!(targets.len(), 1, "one configured target");
         assert_eq!(&*targets[0].name, "only");
-        assert_eq!(targets[0].weight, TargetWeight::DEFAULT);
+        assert_eq!(targets[0].weight, Weight::ONE);
         assert_eq!(targets[0].priority, 0);
     }
 

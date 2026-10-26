@@ -6,7 +6,7 @@
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
 use http::{HeaderMap, HeaderValue, header::HeaderName};
-use praxis_core::config::{PathMatch, Route, RouteTargets, TargetWeight, WeightedTarget};
+use praxis_core::config::{PathMatch, Route, RouteTargets, Weight, WeightedTarget};
 
 #[cfg(feature = "router-json-aliases")]
 use super::config::{JsonAlias, RouterConfig, RouterRouteConfig};
@@ -2820,8 +2820,7 @@ fn weighted_route(prefix: &str, targets: &[(&str, u32, u32)]) -> Route {
                 .iter()
                 .map(|(name, weight, priority)| WeightedTarget {
                     name: (*name).into(),
-                    weight: TargetWeight::try_from(u16::try_from(*weight).expect("weight fits u16"))
-                        .expect("test weight is valid"),
+                    weight: Weight::from(*weight),
                     priority: *priority,
                 })
                 .collect(),

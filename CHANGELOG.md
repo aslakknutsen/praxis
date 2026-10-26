@@ -54,6 +54,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Breaking:** Rust API: `WeightedClusters` and `route_label` are no longer
   exported, and `RouteTargets::single` takes a `ClusterName` instead of
   accepting arbitrary `Into<ClusterName>` input.
+- **Breaking:** Rust API: route-target and endpoint config weights share
+  `config::Weight`; `TargetWeight` is removed and
+  `Endpoint::Weighted::weight` is a `Weight`.
 
 ### Fixed
 
