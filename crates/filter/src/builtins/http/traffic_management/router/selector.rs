@@ -21,9 +21,7 @@ use praxis_core::{
     health::{ClusterHealthEntry, HealthRegistry},
 };
 
-use crate::load_balancing::weighted_cycle::{
-    WeightedCycle, pick_weighted_cycle, pick_weighted_cycle_unfiltered,
-};
+use crate::weighted_cycle::{WeightedCycle, pick_weighted_cycle, pick_weighted_cycle_unfiltered};
 
 // -----------------------------------------------------------------------------
 // CompiledTargets

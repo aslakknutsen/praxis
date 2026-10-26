@@ -18,7 +18,6 @@ pub(crate) mod round_robin;
 pub(crate) mod slow_start;
 pub(crate) mod strategy;
 pub(crate) mod subset;
-pub(crate) mod weighted_cycle;
 pub(crate) mod zone_aware;
 
 // -----------------------------------------------------------------------------

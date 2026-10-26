@@ -3,10 +3,12 @@
 
 //! Weighted round-robin cursor and bucket selection.
 //!
-//! Endpoint strategies and route-target selection share one weighting
-//! primitive: a monotonically increasing slot modulo the candidate weight
-//! total, resolved against cumulative weight buckets. Keeping it here means a
-//! fix to distribution or overflow handling applies to both layers.
+//! This is a crate-level primitive shared by two layers: endpoint strategies
+//! (`load_balancing`) and route-target selection (`router`). A monotonically
+//! increasing slot modulo the candidate weight total is resolved against
+//! cumulative weight buckets. Keeping it outside `load_balancing` makes the
+//! layering explicit: the router selects a cluster, the load balancer selects
+//! an endpoint, and neither owns the other's module.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

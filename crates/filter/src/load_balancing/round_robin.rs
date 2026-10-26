@@ -11,8 +11,8 @@ use super::{
     endpoint::WeightedEndpoint,
     is_excluded,
     slow_start::{self, EffectiveWeights},
-    weighted_cycle::{WeightedCycle, pick_weighted_matching},
 };
+use crate::weighted_cycle::{WeightedCycle, pick_weighted_matching};
 
 // -----------------------------------------------------------------------------
 // RoundRobin
