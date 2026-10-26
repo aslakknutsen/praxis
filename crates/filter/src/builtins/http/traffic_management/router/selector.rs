@@ -31,6 +31,10 @@ use crate::load_balancing::weighted_cycle::{WeightedCycle, pick_weighted_cycle};
 #[derive(Debug)]
 pub(crate) enum CompiledTargets {
     /// One cluster: selection is infallible and has no shared state.
+    ///
+    /// The common `cluster:` form collapses here so it avoids the tier scan
+    /// and the shared round-robin atomic; a single target has nothing to spill
+    /// to.
     Single(Arc<str>),
 
     /// Weighted, priority-tiered cluster selection.
@@ -77,12 +81,9 @@ pub(crate) struct ClusterSelector {
 
     /// Target indices grouped by priority tier, lowest priority number first.
     ///
-    /// Each tier carries its own weight total and round-robin cycle, so
-    /// request-time selection only visits the active tier's targets.
+    /// Each tier carries its own round-robin cycle, so request-time selection
+    /// only visits the active tier's targets.
     tiers: Box<[Tier]>,
-
-    /// First target name, used if a selector is built without targets.
-    fallback: Arc<str>,
 
     /// Health handles resolved at pipeline install.
     ///
@@ -107,13 +108,9 @@ impl ClusterSelector {
     pub(crate) fn new<T: Into<Arc<[WeightedTarget]>>>(targets: T) -> Self {
         let targets: Arc<[WeightedTarget]> = targets.into();
         let tiers = build_tiers(&targets);
-        let fallback = targets
-            .first()
-            .map_or_else(|| Arc::from(""), |target| target.name.shared());
         Self {
             targets,
             tiers,
-            fallback,
             health: None,
         }
     }
@@ -134,9 +131,15 @@ impl ClusterSelector {
     /// provides the cluster. A health change that empties a tier spills to the
     /// next one instead of failing the request.
     ///
-    /// Selection is infallible: a route target set is never empty.
+    /// # Panics
+    ///
+    /// Panics only if the selector was built without targets, which
+    /// [`RouteTargets`] makes impossible.
+    ///
+    /// [`RouteTargets`]: praxis_core::config::RouteTargets
+    #[expect(clippy::expect_used, reason = "route target sets are validated non-empty")]
     pub(crate) fn select(&self) -> Arc<str> {
-        self.try_select().unwrap_or_else(|| Arc::clone(&self.fallback))
+        self.try_select().expect("a route target set is never empty")
     }
 
     /// Try each tier in order, then fan out to the primary tier in panic mode.
