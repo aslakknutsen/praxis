@@ -165,7 +165,7 @@ impl CompiledTarget {
         }
         self.health
             .as_ref()
-            .is_none_or(|entry| entry.has_healthy_endpoint())
+            .is_none_or(|entry| entry.is_available())
     }
 }
 
