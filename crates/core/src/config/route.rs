@@ -292,7 +292,8 @@ impl RouteTargets {
     /// # Errors
     ///
     /// Returns a message naming the offending target when the list is empty,
-    /// a name is empty or duplicated, or the total weight is too large.
+    /// a name is duplicated, or the total weight is too large. Empty names are
+    /// rejected by [`ClusterName`] before they can reach this constructor.
     pub fn try_new(targets: Vec<WeightedTarget>) -> Result<Self, String> {
         Self::validate(&targets)?;
         Ok(Self(Arc::from(targets)))
@@ -330,16 +331,7 @@ impl RouteTargets {
         &self.0
     }
 
-    /// Whether this set serializes as the `cluster:` shorthand.
-    fn is_shorthand(&self) -> bool {
-        self.0.len() == 1
-            && self
-                .0
-                .first()
-                .is_some_and(|target| target.weight == TargetWeight::DEFAULT && target.priority == 0)
-    }
-
-    /// Validate names, uniqueness, and the total weight bound.
+    /// Validate name uniqueness and the total weight bound.
     fn validate(targets: &[WeightedTarget]) -> Result<(), String> {
         if targets.is_empty() {
             return Err("'weighted_clusters.targets' must not be empty \
@@ -375,18 +367,18 @@ impl Serialize for RouteTargets {
         use serde::ser::SerializeMap as _;
 
         let mut map = serializer.serialize_map(Some(1))?;
-        if self.is_shorthand() {
-            let Some(target) = self.0.first() else {
-                return map.end();
-            };
-            map.serialize_entry("cluster", &target.name)?;
-        } else {
-            map.serialize_entry(
-                "weighted_clusters",
-                &WeightedClustersView {
-                    targets: self.targets(),
-                },
-            )?;
+        match self.0.as_ref() {
+            [target] if target.weight == TargetWeight::DEFAULT && target.priority == 0 => {
+                map.serialize_entry("cluster", &target.name)?;
+            },
+            targets => {
+                map.serialize_entry(
+                    "weighted_clusters",
+                    &WeightedClustersView {
+                        targets,
+                    },
+                )?;
+            },
         }
         map.end()
     }
