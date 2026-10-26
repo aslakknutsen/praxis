@@ -200,8 +200,10 @@ impl HttpFilter for CapabilityFilter {
         self.selects_cluster
     }
 
-    fn selected_clusters(&self) -> Vec<&str> {
-        self.selected_clusters.iter().map(String::as_str).collect()
+    fn for_each_selected_cluster<'a>(&'a self, sink: &mut dyn FnMut(&'a str)) {
+        for cluster in &self.selected_clusters {
+            sink(cluster);
+        }
     }
 
     fn load_balancer_clusters(&self) -> Vec<String> {

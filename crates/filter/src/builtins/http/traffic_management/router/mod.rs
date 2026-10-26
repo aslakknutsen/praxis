@@ -661,11 +661,12 @@ impl HttpFilter for RouterFilter {
         true
     }
 
-    fn selected_clusters(&self) -> Vec<&str> {
-        self.routes
-            .iter()
-            .flat_map(|route| route.route.targets().iter().map(|target| target.name.as_ref()))
-            .collect()
+    fn for_each_selected_cluster<'a>(&'a self, sink: &mut dyn FnMut(&'a str)) {
+        for route in &self.routes {
+            for target in route.route.targets() {
+                sink(target.name.as_ref());
+            }
+        }
     }
 
     fn bind_health(&mut self, registry: &HealthRegistry) {

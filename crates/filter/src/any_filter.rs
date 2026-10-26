@@ -77,6 +77,14 @@ impl AnyFilter {
         }
     }
 
+    /// Pass every cluster name this filter may assign to `sink`.
+    pub fn for_each_selected_cluster<'a>(&'a self, sink: &mut dyn FnMut(&'a str)) {
+        match self {
+            Self::Http(f) => f.for_each_selected_cluster(sink),
+            Self::Tcp(_) => {},
+        }
+    }
+
     /// Cluster names this filter may assign.
     pub fn selected_clusters(&self) -> Vec<&str> {
         match self {
@@ -307,8 +315,8 @@ mod tests {
             true
         }
 
-        fn selected_clusters(&self) -> Vec<&str> {
-            vec!["web"]
+        fn for_each_selected_cluster<'a>(&'a self, sink: &mut dyn FnMut(&'a str)) {
+            sink("web");
         }
 
         fn load_balancer_clusters(&self) -> Vec<String> {

@@ -159,14 +159,22 @@ pub trait HttpFilter: Send + Sync {
         false
     }
 
+    /// Pass every cluster name this filter may select at runtime to `sink`.
+    ///
+    /// Pipeline validation consumes cluster names through this sink so a
+    /// filter that owns many targets does not materialize a `Vec` only for the
+    /// caller to copy it into a set. Filters without static cluster targets
+    /// keep the default no-op.
+    fn for_each_selected_cluster<'a>(&'a self, _sink: &mut dyn FnMut(&'a str)) {}
+
     /// The cluster names this filter may select at runtime.
     ///
-    /// Return every configured cluster target so pipeline validation
-    /// can verify that downstream load balancers define matching
-    /// clusters. Filters without static cluster targets can leave the
-    /// default empty list.
+    /// Convenience wrapper around [`Self::for_each_selected_cluster`] for
+    /// tests and callers that need a borrowed list.
     fn selected_clusters(&self) -> Vec<&str> {
-        Vec::new()
+        let mut out = Vec::new();
+        self.for_each_selected_cluster(&mut |name| out.push(name));
+        out
     }
 
     /// Emit this filter's end-of-request record from the logging phase.
