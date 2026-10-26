@@ -372,36 +372,6 @@ impl RouteTargets {
     }
 }
 
-/// Raw `cluster` / `weighted_clusters` fields shared by route parsers.
-///
-/// `RouteRaw` and the router's own raw route both spell these two fields out
-/// because `#[serde(deny_unknown_fields)]` cannot be combined with
-/// `#[serde(flatten)]`. They share this conversion so the exactly-one rule and
-/// error label live in one place.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RouteTargetsRaw {
-    /// Name of the cluster to route matched requests to.
-    #[serde(default)]
-    pub cluster: Option<ClusterName>,
-
-    /// Weighted cluster targets with optional priority tiers.
-    #[serde(default)]
-    pub weighted_clusters: Option<WeightedClusters>,
-}
-
-impl RouteTargetsRaw {
-    /// Build the canonical target set, naming the route in errors.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when both keys are set, neither is set, or the
-    /// weighted targets are invalid.
-    pub fn into_targets(self, route_label: &str) -> Result<RouteTargets, String> {
-        RouteTargets::from_parts(self.cluster, self.weighted_clusters, route_label)
-    }
-}
-
 impl Serialize for RouteTargets {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -746,11 +716,7 @@ impl TryFrom<RouteRaw> for Route {
     fn try_from(raw: RouteRaw) -> Result<Self, Self::Error> {
         let path_match = PathMatch::from_parts(raw.path, raw.path_prefix)?;
         let label = route_label(path_match.value(), raw.host.as_deref(), raw.headers.as_ref());
-        let target = RouteTargetsRaw {
-            cluster: raw.cluster,
-            weighted_clusters: raw.weighted_clusters,
-        }
-        .into_targets(&label)?;
+        let target = RouteTargets::from_parts(raw.cluster, raw.weighted_clusters, &label)?;
         let route = Self {
             path_match,
             target,
