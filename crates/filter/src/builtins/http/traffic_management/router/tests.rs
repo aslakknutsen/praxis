@@ -2819,7 +2819,7 @@ fn weighted_route(prefix: &str, targets: &[(&str, u32, u32)]) -> Route {
             targets
                 .iter()
                 .map(|(name, weight, priority)| WeightedTarget {
-                    name: Arc::from(*name),
+                    name: (*name).into(),
                     weight: TargetWeight::try_from(u16::try_from(*weight).expect("weight fits u16"))
                         .expect("test weight is valid"),
                     priority: *priority,

@@ -11,6 +11,8 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    fmt,
+    ops::Deref,
     sync::Arc,
 };
 
@@ -178,6 +180,90 @@ impl PathMatch {
 // Route
 // -----------------------------------------------------------------------------
 
+/// A non-empty cluster name.
+///
+/// Deserialization rejects an empty name, so a route parsed from YAML cannot
+/// target a cluster that has no name. The infallible `From` conversions assert
+/// the invariant and exist for literals and tests; configuration input goes
+/// through [`Deserialize`], which returns an error instead.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[serde(transparent)]
+pub struct ClusterName(Arc<str>);
+
+impl ClusterName {
+    /// Build a cluster name.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `name` is empty. Use [`Deserialize`] for untrusted input.
+    pub fn new<T: Into<Arc<str>>>(name: T) -> Self {
+        let name = name.into();
+        assert!(!name.is_empty(), "cluster name must not be empty");
+        Self(name)
+    }
+
+    /// The name as a string slice.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// A cheaply cloned handle to the name.
+    pub fn shared(&self) -> Arc<str> {
+        Arc::clone(&self.0)
+    }
+}
+
+impl Deref for ClusterName {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<str> for ClusterName {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ClusterName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<&str> for ClusterName {
+    fn from(name: &str) -> Self {
+        Self::new(name)
+    }
+}
+
+impl From<String> for ClusterName {
+    fn from(name: String) -> Self {
+        Self::new(name)
+    }
+}
+
+impl From<Arc<str>> for ClusterName {
+    fn from(name: Arc<str>) -> Self {
+        Self::new(name)
+    }
+}
+
+impl<'de> Deserialize<'de> for ClusterName {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let name = String::deserialize(deserializer)?;
+        if name.is_empty() {
+            return Err(serde::de::Error::custom("cluster name must not be empty"));
+        }
+        Ok(Self(name.into()))
+    }
+}
+
 /// A route's cluster destination in canonical form.
 ///
 /// `cluster: name` and `weighted_clusters: { targets: [...] }` both
@@ -193,7 +279,7 @@ pub struct RouteTargets(Arc<[WeightedTarget]>);
 
 impl RouteTargets {
     /// Build the single-target shorthand.
-    pub fn single<T: Into<Arc<str>>>(cluster: T) -> Self {
+    pub fn single<T: Into<ClusterName>>(cluster: T) -> Self {
         Self(Arc::from([WeightedTarget {
             name: cluster.into(),
             weight: TargetWeight::DEFAULT,
@@ -221,7 +307,7 @@ impl RouteTargets {
     /// Returns an error when both `cluster` and `weighted_clusters` are set,
     /// when neither is, or when the weighted targets are invalid.
     fn from_parts(
-        cluster: Option<Arc<str>>,
+        cluster: Option<ClusterName>,
         weighted_clusters: Option<WeightedClusters>,
         route_label: &str,
     ) -> Result<Self, String> {
@@ -267,10 +353,7 @@ impl RouteTargets {
         }
         let mut seen = HashSet::new();
         let mut total: u64 = 0;
-        for (index, target) in targets.iter().enumerate() {
-            if target.name.is_empty() {
-                return Err(format!("'weighted_clusters.targets[{index}].name' must not be empty"));
-            }
+        for target in targets {
             if !seen.insert(target.name.as_ref()) {
                 return Err(format!(
                     "'weighted_clusters.targets' has duplicate name '{}'; \
@@ -300,7 +383,7 @@ impl RouteTargets {
 pub struct RouteTargetsRaw {
     /// Name of the cluster to route matched requests to.
     #[serde(default)]
-    pub cluster: Option<Arc<str>>,
+    pub cluster: Option<ClusterName>,
 
     /// Weighted cluster targets with optional priority tiers.
     #[serde(default)]
@@ -421,7 +504,7 @@ pub struct WeightedClusters {
 #[serde(deny_unknown_fields)]
 pub struct WeightedTarget {
     /// Name of the cluster to route matched requests to.
-    pub name: Arc<str>,
+    pub name: ClusterName,
 
     /// Relative weight within the target's priority tier.
     ///
@@ -557,7 +640,7 @@ struct RouteRaw {
     /// Name of the cluster to route matched requests to. Exactly one of
     /// `cluster` or `weighted_clusters` must be set.
     #[serde(default)]
-    cluster: Option<Arc<str>>,
+    cluster: Option<ClusterName>,
 
     /// Weighted cluster targets with optional priority tiers. Exactly one of
     /// `cluster` or `weighted_clusters` must be set.
@@ -1046,8 +1129,17 @@ weighted_clusters:
         let yaml = weighted_route_yaml("    - name: \"\"\n");
         let err = serde_yaml::from_str::<Route>(&yaml).unwrap_err();
         assert!(
-            err.to_string().contains("name' must not be empty"),
+            err.to_string().contains("cluster name must not be empty"),
             "an empty target name can never match a cluster: {err}"
+        );
+    }
+
+    #[test]
+    fn cluster_shorthand_rejects_empty_name() {
+        let err = serde_yaml::from_str::<Route>("path_prefix: \"/\"\ncluster: \"\"\n").unwrap_err();
+        assert!(
+            err.to_string().contains("cluster name must not be empty"),
+            "an empty shorthand cluster name can never match a cluster: {err}"
         );
     }
 

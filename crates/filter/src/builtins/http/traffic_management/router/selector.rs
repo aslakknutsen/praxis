@@ -41,7 +41,7 @@ impl CompiledTargets {
     /// Compile a route's canonical target set.
     pub(crate) fn new(targets: Arc<[WeightedTarget]>) -> Self {
         match targets.as_ref() {
-            [target] => Self::Single(Arc::clone(&target.name)),
+            [target] => Self::Single(target.name.shared()),
             _ => Self::Weighted(ClusterSelector::new(targets)),
         }
     }
@@ -112,7 +112,7 @@ impl ClusterSelector {
         let tiers = build_tiers(&targets);
         let fallback = targets
             .first()
-            .map_or_else(|| Arc::from(""), |target| Arc::clone(&target.name));
+            .map_or_else(|| Arc::from(""), |target| target.name.shared());
         Self {
             targets,
             tiers,
@@ -192,7 +192,7 @@ impl ClusterSelector {
                 .iter()
                 .filter_map(|&(index, weight)| self.eligible(index, registry).then_some((index, weight))),
         )?;
-        self.targets.get(winner).map(|target| Arc::clone(&target.name))
+        self.targets.get(winner).map(|target| target.name.shared())
     }
 
     /// Sum the weights of the tier's eligible targets.
@@ -260,7 +260,7 @@ mod tests {
 
     fn target(name: &str, weight: u16, priority: u32) -> WeightedTarget {
         WeightedTarget {
-            name: Arc::from(name),
+            name: name.into(),
             weight: TargetWeight::try_from(weight).unwrap(),
             priority,
         }

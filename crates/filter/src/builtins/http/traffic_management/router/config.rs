@@ -3,9 +3,9 @@
 
 //! Deserialized YAML configuration types for the router filter.
 
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
-use praxis_core::config::{PathMatch, Route, RouteTargetsRaw, WeightedClusters, route_label};
+use praxis_core::config::{ClusterName, PathMatch, Route, RouteTargetsRaw, WeightedClusters, route_label};
 use serde::Deserialize;
 
 // -----------------------------------------------------------------------------
@@ -117,7 +117,7 @@ struct RouterRouteConfigRaw {
     /// Name of the cluster to route matched requests to. Exactly one of
     /// `cluster` or `weighted_clusters` must be set.
     #[serde(default)]
-    cluster: Option<Arc<str>>,
+    cluster: Option<ClusterName>,
 
     /// Weighted cluster targets with optional priority tiers. Exactly one of
     /// `cluster` or `weighted_clusters` must be set.
