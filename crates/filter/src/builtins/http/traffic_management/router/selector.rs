@@ -127,24 +127,39 @@ impl CompiledTargets {
     /// Warn when a failover target can never be gated by health.
     ///
     /// A target whose cluster has no top-level `health_check` has no registry
-    /// entry, so it stays eligible and its priority tier never spills. That is
-    /// valid for a single-target set, but a silent misconfiguration for a
-    /// failover tier.
+    /// entry, so it stays eligible. If its tier has a lower-priority tier below
+    /// it, that lower tier can never be reached: the upper tier can never be
+    /// marked fully unhealthy. That is valid for the last tier, but a silent
+    /// misconfiguration anywhere above it.
     pub(crate) fn warn_unhealthy_priority_targets(&self, route: &str) {
-        for tier in &self.tiers {
-            if tier.priority == 0 {
-                continue;
-            }
-            for target in &tier.targets {
-                if target.health.is_none() {
-                    tracing::warn!(
-                        cluster = %target.name,
-                        route = %route,
-                        "weighted target has no health state; its priority tier cannot spill"
-                    );
-                }
-            }
+        for (target, priority) in self.unhealthy_priority_targets() {
+            let reason = if priority == 0 {
+                "primary target has no health state; lower-priority tiers will never receive traffic"
+            } else {
+                "weighted target has no health state; this tier will never spill to lower-priority tiers"
+            };
+            tracing::warn!(
+                cluster = %target.name,
+                route = %route,
+                priority,
+                reason,
+                "weighted target cannot be marked unhealthy"
+            );
         }
+    }
+
+    /// Targets without health state that sit above a lower-priority tier.
+    fn unhealthy_priority_targets(&self) -> impl Iterator<Item = (&CompiledTarget, u32)> {
+        let last_priority = self.tiers.last().map(|tier| tier.priority);
+        self.tiers
+            .iter()
+            .filter(move |tier| Some(tier.priority) != last_priority)
+            .flat_map(|tier| {
+                tier.targets
+                    .iter()
+                    .filter(|target| target.health.is_none())
+                    .map(move |target| (target, tier.priority))
+            })
     }
 
     /// Select the cluster for one request.
@@ -389,6 +404,40 @@ mod tests {
             picks,
             vec!["a", "b", "a", "b"],
             "ties resolve to the lowest target index"
+        );
+    }
+
+    #[test]
+    fn diagnostics_cover_primary_and_intermediate_tiers() {
+        let mut selector = compile(vec![target("a", 1, 0), target("b", 1, 1), target("c", 1, 2)]);
+        let empty: HealthRegistry = Arc::new(HashMap::new());
+        selector.bind_health(&empty);
+
+        let diagnosed: Vec<(String, u32)> = selector
+            .unhealthy_priority_targets()
+            .map(|(target, priority)| (target.name.to_string(), priority))
+            .collect();
+        assert_eq!(
+            diagnosed,
+            vec![("a".to_owned(), 0), ("b".to_owned(), 1)],
+            "every tier above a lower tier must be diagnosable"
+        );
+    }
+
+    #[test]
+    fn last_tier_without_health_is_not_a_misconfiguration() {
+        let mut selector = compile(vec![target("a", 1, 0), target("dr", 1, 1)]);
+        let empty: HealthRegistry = Arc::new(HashMap::new());
+        selector.bind_health(&empty);
+
+        let diagnosed: Vec<&str> = selector
+            .unhealthy_priority_targets()
+            .map(|(target, _)| target.name.as_ref())
+            .collect();
+        assert_eq!(
+            diagnosed,
+            vec!["a"],
+            "the last tier has nothing below it to spill to"
         );
     }
 
