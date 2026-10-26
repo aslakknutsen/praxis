@@ -43,17 +43,18 @@ impl WeightedCycle {
 
 /// Return the candidate whose cumulative weight bucket contains `slot`.
 ///
-/// `candidates` yields `(index, weight)` in configuration order. `slot` must be
-/// less than the sum of the yielded weights; a slot outside that range returns
-/// `None`.
-pub(crate) fn pick_weighted<I>(slot: u64, candidates: I) -> Option<usize>
+/// `candidates` yields `(candidate, weight)` in configuration order. `slot`
+/// must be less than the sum of the yielded weights; a slot outside that range
+/// returns `None`. Returning the candidate itself rather than an index lets
+/// callers keep their own row representation without a second lookup.
+pub(crate) fn pick_weighted<T, I>(slot: u64, candidates: I) -> Option<T>
 where
-    I: IntoIterator<Item = (usize, u64)>,
+    I: IntoIterator<Item = (T, u64)>,
 {
     let mut remaining = slot;
-    for (index, weight) in candidates {
+    for (candidate, weight) in candidates {
         if remaining < weight {
-            return Some(index);
+            return Some(candidate);
         }
         remaining = remaining.saturating_sub(weight);
     }
@@ -61,14 +62,15 @@ where
 }
 
 /// Total weight of the candidates `eligible` accepts.
-fn eligible_weight<I, F>(candidates: I, eligible: F) -> u64
+fn eligible_weight<T, I, F>(candidates: I, eligible: F) -> u64
 where
-    I: IntoIterator<Item = (usize, u64)>,
-    F: Fn(usize) -> bool,
+    T: Copy,
+    I: IntoIterator<Item = (T, u64)>,
+    F: Fn(T) -> bool,
 {
     candidates
         .into_iter()
-        .filter(|(index, _)| eligible(*index))
+        .filter(|(candidate, _)| eligible(*candidate))
         .fold(0_u64, |total, (_, weight)| total.saturating_add(weight))
 }
 
@@ -79,17 +81,18 @@ where
 /// here so a health change redistributes without biasing the cycle. `candidates`
 /// is iterated twice, so pass a cheaply cloneable iterator (a slice iterator or
 /// `iter().copied()`).
-pub(crate) fn pick_weighted_matching<I, F>(tick: u64, candidates: I, eligible: F) -> Option<usize>
+pub(crate) fn pick_weighted_matching<T, I, F>(tick: u64, candidates: I, eligible: F) -> Option<T>
 where
-    I: IntoIterator<Item = (usize, u64)> + Clone,
-    F: Fn(usize) -> bool,
+    T: Copy,
+    I: IntoIterator<Item = (T, u64)> + Clone,
+    F: Fn(T) -> bool,
 {
     let total = eligible_weight(candidates.clone(), &eligible);
     if total == 0 {
         return None;
     }
     let slot = tick.checked_rem(total)?;
-    pick_weighted(slot, candidates.into_iter().filter(|(index, _)| eligible(*index)))
+    pick_weighted(slot, candidates.into_iter().filter(|(candidate, _)| eligible(*candidate)))
 }
 
 /// Advance `cycle` and pick an eligible candidate.
@@ -97,17 +100,34 @@ where
 /// Unlike [`pick_weighted_matching`], this does not consume a turn when no
 /// candidate is eligible, so a health-gated caller can probe a tier before
 /// falling back to panic mode without shifting that tier's rotation.
-pub(crate) fn pick_weighted_cycle<I, F>(cycle: &WeightedCycle, candidates: I, eligible: F) -> Option<usize>
+pub(crate) fn pick_weighted_cycle<T, I, F>(cycle: &WeightedCycle, candidates: I, eligible: F) -> Option<T>
 where
-    I: IntoIterator<Item = (usize, u64)> + Clone,
-    F: Fn(usize) -> bool,
+    T: Copy,
+    I: IntoIterator<Item = (T, u64)> + Clone,
+    F: Fn(T) -> bool,
 {
     let total = eligible_weight(candidates.clone(), &eligible);
     if total == 0 {
         return None;
     }
     let slot = cycle.next().checked_rem(total)?;
-    pick_weighted(slot, candidates.into_iter().filter(|(index, _)| eligible(*index)))
+    pick_weighted(slot, candidates.into_iter().filter(|(candidate, _)| eligible(*candidate)))
+}
+
+/// Advance `cycle` over a pre-computed weight total, with no eligibility pass.
+///
+/// Use this when every candidate is known to be eligible (no health gating, or
+/// panic mode). It avoids the two candidate scans [`pick_weighted_cycle`]
+/// needs to recompute the eligible total.
+pub(crate) fn pick_weighted_cycle_unfiltered<T, I>(cycle: &WeightedCycle, total: u64, candidates: I) -> Option<T>
+where
+    I: IntoIterator<Item = (T, u64)>,
+{
+    if total == 0 {
+        return None;
+    }
+    let slot = cycle.next().checked_rem(total)?;
+    pick_weighted(slot, candidates)
 }
 
 // -----------------------------------------------------------------------------

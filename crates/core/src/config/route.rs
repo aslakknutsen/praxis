@@ -330,11 +330,6 @@ impl RouteTargets {
         &self.0
     }
 
-    /// A cheaply cloned handle to the target list.
-    pub fn shared(&self) -> Arc<[WeightedTarget]> {
-        Arc::clone(&self.0)
-    }
-
     /// Whether this set serializes as the `cluster:` shorthand.
     fn is_shorthand(&self) -> bool {
         self.0.len() == 1

@@ -588,7 +588,7 @@ fn resolve_routes(routes: Vec<RouterRouteConfig>) -> Vec<ResolvedRoute> {
             });
             let retry_policy = route.retry_policy.clone().map(Arc::new);
             let hedge_policy = route.hedge_policy.clone().map(Arc::new);
-            let targets = CompiledTargets::new(route.target.shared());
+            let targets = CompiledTargets::compile(&route.target);
             ResolvedRoute {
                 route,
                 metrics_label,

@@ -1349,7 +1349,7 @@ async fn on_request_strips_port_from_host_header() {
 fn route_matches_request_path_only_hit() {
     let route = prefix_route("/api/", "api");
     let resolved = ResolvedRoute {
-        targets: CompiledTargets::new(route.target.shared()),
+        targets: CompiledTargets::compile(&route.target),
         route,
         metrics_label: ::metrics::SharedString::const_str("/"),
         wildcard_suffix: None,
@@ -1366,7 +1366,7 @@ fn route_matches_request_path_only_hit() {
 fn route_matches_request_path_miss() {
     let route = prefix_route("/api/", "api");
     let resolved = ResolvedRoute {
-        targets: CompiledTargets::new(route.target.shared()),
+        targets: CompiledTargets::compile(&route.target),
         route,
         metrics_label: ::metrics::SharedString::const_str("/"),
         wildcard_suffix: None,
@@ -1392,7 +1392,7 @@ fn route_matches_request_host_hit() {
         hedge_policy: None,
     };
     let resolved = ResolvedRoute {
-        targets: CompiledTargets::new(route.target.shared()),
+        targets: CompiledTargets::compile(&route.target),
         route,
         metrics_label: ::metrics::SharedString::const_str("/"),
         wildcard_suffix: None,
@@ -1418,7 +1418,7 @@ fn route_matches_request_host_miss() {
         hedge_policy: None,
     };
     let resolved = ResolvedRoute {
-        targets: CompiledTargets::new(route.target.shared()),
+        targets: CompiledTargets::compile(&route.target),
         route,
         metrics_label: ::metrics::SharedString::const_str("/"),
         wildcard_suffix: None,
@@ -1444,7 +1444,7 @@ fn route_matches_request_host_miss_when_no_host() {
         hedge_policy: None,
     };
     let resolved = ResolvedRoute {
-        targets: CompiledTargets::new(route.target.shared()),
+        targets: CompiledTargets::compile(&route.target),
         route,
         metrics_label: ::metrics::SharedString::const_str("/"),
         wildcard_suffix: None,
@@ -1470,7 +1470,7 @@ fn route_matches_request_header_hit() {
         hedge_policy: None,
     };
     let resolved = ResolvedRoute {
-        targets: CompiledTargets::new(route.target.shared()),
+        targets: CompiledTargets::compile(&route.target),
         route,
         metrics_label: ::metrics::SharedString::const_str("/"),
         wildcard_suffix: None,
@@ -1498,7 +1498,7 @@ fn route_matches_request_header_miss() {
         hedge_policy: None,
     };
     let resolved = ResolvedRoute {
-        targets: CompiledTargets::new(route.target.shared()),
+        targets: CompiledTargets::compile(&route.target),
         route,
         metrics_label: ::metrics::SharedString::const_str("/"),
         wildcard_suffix: None,
@@ -1526,7 +1526,7 @@ fn route_matches_request_compound() {
         hedge_policy: None,
     };
     let resolved = ResolvedRoute {
-        targets: CompiledTargets::new(route.target.shared()),
+        targets: CompiledTargets::compile(&route.target),
         route,
         metrics_label: ::metrics::SharedString::const_str("/"),
         wildcard_suffix: None,
@@ -1663,7 +1663,7 @@ fn route_matches_request_empty_headers_constraint() {
         hedge_policy: None,
     };
     let resolved = ResolvedRoute {
-        targets: CompiledTargets::new(route.target.shared()),
+        targets: CompiledTargets::compile(&route.target),
         route,
         metrics_label: ::metrics::SharedString::const_str("/"),
         wildcard_suffix: None,

@@ -14,132 +14,112 @@
 //! selected cluster are applied later by the `load_balancer` filter, so the
 //! effective share is `route_target_share * endpoint_share_within_cluster`.
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use praxis_core::{
-    config::WeightedTarget,
+    config::RouteTargets,
     health::{ClusterHealthEntry, HealthRegistry},
 };
 
-use crate::load_balancing::weighted_cycle::{WeightedCycle, pick_weighted_cycle};
+use crate::load_balancing::weighted_cycle::{
+    WeightedCycle, pick_weighted_cycle, pick_weighted_cycle_unfiltered,
+};
 
 // -----------------------------------------------------------------------------
 // CompiledTargets
 // -----------------------------------------------------------------------------
 
 /// A route's compiled cluster destinations.
+///
+/// Tiers are ordered by priority number, lowest first. Compilation takes the
+/// validated [`RouteTargets`], so the tier list and every tier are non-empty.
 #[derive(Debug)]
-pub(crate) enum CompiledTargets {
-    /// One cluster: selection is infallible and has no shared state.
-    ///
-    /// The common `cluster:` form collapses here so it avoids the tier scan
-    /// and the shared round-robin atomic; a single target has nothing to spill
-    /// to.
-    Single(Arc<str>),
-
-    /// Weighted, priority-tiered cluster selection.
-    Weighted(ClusterSelector),
-}
-
-impl CompiledTargets {
-    /// Compile a route's canonical target set.
-    pub(crate) fn new(targets: Arc<[WeightedTarget]>) -> Self {
-        match targets.as_ref() {
-            [target] => Self::Single(target.name.shared()),
-            _ => Self::Weighted(ClusterSelector::new(targets)),
-        }
-    }
-
-    /// Bind the pipeline's health handles, once per pipeline instance.
-    pub(crate) fn bind_health(&mut self, registry: &HealthRegistry) {
-        if let Self::Weighted(selector) = self {
-            selector.bind_health(registry);
-        }
-    }
-
-    /// Select the cluster for one request.
-    pub(crate) fn select(&self) -> Arc<str> {
-        match self {
-            Self::Single(cluster) => Arc::clone(cluster),
-            Self::Weighted(selector) => selector.select(),
-        }
-    }
-}
-
-// -----------------------------------------------------------------------------
-// ClusterSelector
-// -----------------------------------------------------------------------------
-
-/// Health handles aligned with a selector's target list.
-type HealthHandles = Box<[Option<Arc<ClusterHealthEntry>>]>;
-
-/// Selects one cluster from a route's weighted targets.
-#[derive(Debug)]
-pub(crate) struct ClusterSelector {
-    /// Targets in configuration order; index order is the tie-break order.
-    targets: Arc<[WeightedTarget]>,
-
-    /// Target indices grouped by priority tier, lowest priority number first.
-    ///
-    /// Each tier carries its own round-robin cycle, so request-time selection
-    /// only visits the active tier's targets.
+pub(crate) struct CompiledTargets {
+    /// Priority tiers, lowest priority number first.
     tiers: Box<[Tier]>,
-
-    /// Health handles resolved at pipeline install.
-    ///
-    /// Binding once removes a name-keyed registry lookup from the request path
-    /// and makes the health source explicit: a target without a top-level
-    /// health-checked cluster has no handle and stays eligible.
-    health: Option<HealthHandles>,
 }
 
 /// One priority tier.
 #[derive(Debug)]
 struct Tier {
-    /// Target indices and weights in configuration order.
-    targets: Box<[(usize, u64)]>,
+    /// Compiled targets in configuration order; index order is the tie-break.
+    targets: Box<[CompiledTarget]>,
 
-    /// Weighted round-robin cursor for this tier.
-    cycle: WeightedCycle,
+    /// Sum of the configured target weights in this tier.
+    total_weight: u64,
+
+    /// Weighted round-robin cursor. `None` for a single-target tier, which has
+    /// nothing to rotate and should not pay for an atomic.
+    cycle: Option<WeightedCycle>,
+
+    /// Whether at least one target in this tier has a bound health handle.
+    ///
+    /// A tier with no health handles can skip eligibility scanning entirely and
+    /// use the pre-computed [`Self::total_weight`].
+    health_gated: bool,
 }
 
-impl ClusterSelector {
-    /// Build a selector from canonical weighted targets.
-    pub(crate) fn new<T: Into<Arc<[WeightedTarget]>>>(targets: T) -> Self {
-        let targets: Arc<[WeightedTarget]> = targets.into();
-        let tiers = build_tiers(&targets);
-        Self {
-            targets,
-            tiers,
-            health: None,
+/// One cluster target with everything selection needs.
+#[derive(Debug)]
+struct CompiledTarget {
+    /// Cluster name.
+    name: Arc<str>,
+
+    /// Validated route-target weight.
+    weight: u64,
+
+    /// Health handle resolved at pipeline install, if the cluster is checked.
+    health: Option<Arc<ClusterHealthEntry>>,
+}
+
+impl CompiledTargets {
+    /// Compile a route's validated target set.
+    pub(crate) fn compile(targets: &RouteTargets) -> Self {
+        let mut by_priority: BTreeMap<u32, Vec<CompiledTarget>> = BTreeMap::new();
+        for target in targets.targets() {
+            by_priority
+                .entry(target.priority)
+                .or_default()
+                .push(CompiledTarget {
+                    name: target.name.shared(),
+                    weight: u64::from(target.weight.get()),
+                    health: None,
+                });
+        }
+        let tiers = by_priority
+            .into_values()
+            .map(|targets| {
+                let total_weight = targets.iter().fold(0_u64, |total, target| total.saturating_add(target.weight));
+                Tier {
+                    cycle: (targets.len() > 1).then(WeightedCycle::new),
+                    targets: targets.into_boxed_slice(),
+                    total_weight,
+                    health_gated: false,
+                }
+            })
+            .collect();
+        Self { tiers }
+    }
+
+    /// Bind the pipeline's health handles, once per pipeline instance.
+    pub(crate) fn bind_health(&mut self, registry: &HealthRegistry) {
+        for tier in &mut self.tiers {
+            for target in &mut tier.targets {
+                target.health = registry.get(&*target.name).cloned();
+            }
+            tier.health_gated = tier.targets.iter().any(|target| target.health.is_some());
         }
     }
 
-    /// Resolve every target's health handle from the pipeline registry.
-    pub(crate) fn bind_health(&mut self, registry: &HealthRegistry) {
-        self.health = Some(
-            self.targets
-                .iter()
-                .map(|target| registry.get(&*target.name).cloned())
-                .collect(),
-        );
-    }
-
-    /// Select a cluster, honoring cluster health when it was bound.
-    ///
-    /// Tiers are tried in order, and the first one with an eligible target
-    /// provides the cluster. A health change that empties a tier spills to the
-    /// next one instead of failing the request.
+    /// Select the cluster for one request.
     ///
     /// # Panics
     ///
-    /// Panics only if the selector was built without targets, which
-    /// [`RouteTargets`] makes impossible.
-    ///
-    /// [`RouteTargets`]: praxis_core::config::RouteTargets
-    #[expect(clippy::expect_used, reason = "route target sets are validated non-empty")]
+    /// Panics only if the compiled set is empty, which [`RouteTargets`] makes
+    /// impossible and [`Self::compile`] is the only constructor.
+    #[expect(clippy::expect_used, reason = "a compiled route target set is never empty")]
     pub(crate) fn select(&self) -> Arc<str> {
-        self.try_select().expect("a route target set is never empty")
+        self.try_select().expect("a compiled route target set is never empty")
     }
 
     /// Try each tier in order, then fan out to the primary tier in panic mode.
@@ -153,62 +133,40 @@ impl ClusterSelector {
         // Panic mode mirrors endpoint priority handling: no tier has a healthy
         // target, so use the highest-priority tier regardless of health and let
         // the downstream load balancer panic too.
-        let tier = self.tiers.first()?;
-        self.select_from_tier(tier, false)
+        self.tiers
+            .first()
+            .and_then(|tier| self.select_from_tier(tier, false))
     }
 
-    /// Whether a target's cluster can serve traffic.
+    /// Weighted round-robin across one pre-computed tier.
+    fn select_from_tier(&self, tier: &Tier, require_health: bool) -> Option<Arc<str>> {
+        let Some(cycle) = &tier.cycle else {
+            let target = tier.targets.first()?;
+            return target.is_eligible(require_health).then(|| Arc::clone(&target.name));
+        };
+        let candidates = || tier.targets.iter().map(|target| (target, target.weight));
+        let winner = if require_health && tier.health_gated {
+            pick_weighted_cycle(cycle, candidates(), |target| target.is_eligible(true))?
+        } else {
+            pick_weighted_cycle_unfiltered(cycle, tier.total_weight, candidates())?
+        };
+        Some(Arc::clone(&winner.name))
+    }
+}
+
+impl CompiledTarget {
+    /// Whether this target's cluster can serve traffic.
     ///
-    /// No bound handle, or a cluster absent from the registry, means
-    /// "eligible": untracked clusters are not health-gated. A tracked cluster
-    /// needs at least one healthy endpoint. Total endpoint count is not
-    /// otherwise weighed here; endpoint capacity and overprovisioning stay in
-    /// the load balancer.
-    fn eligible(&self, index: usize, require_health: bool) -> bool {
-        if self.targets.get(index).is_none() {
-            return false;
-        }
+    /// No bound handle means "eligible": untracked clusters are not
+    /// health-gated. A tracked cluster needs at least one healthy endpoint.
+    fn is_eligible(&self, require_health: bool) -> bool {
         if !require_health {
             return true;
         }
         self.health
             .as_ref()
-            .and_then(|handles| handles.get(index))
-            .and_then(Option::as_ref)
             .is_none_or(|entry| entry.has_healthy_endpoint())
     }
-
-    /// Weighted round-robin across one pre-computed tier.
-    fn select_from_tier(&self, tier: &Tier, require_health: bool) -> Option<Arc<str>> {
-        let winner = pick_weighted_cycle(&tier.cycle, tier.targets.iter().copied(), |index| {
-            self.eligible(index, require_health)
-        })?;
-        self.targets.get(winner).map(|target| target.name.shared())
-    }
-}
-
-/// Group targets by priority and pre-compute each tier's weights and total.
-fn build_tiers(targets: &[WeightedTarget]) -> Box<[Tier]> {
-    let mut by_priority: std::collections::BTreeMap<u32, Vec<usize>> = std::collections::BTreeMap::new();
-    for (index, target) in targets.iter().enumerate() {
-        by_priority.entry(target.priority).or_default().push(index);
-    }
-    by_priority
-        .into_values()
-        .map(|indices| {
-            let tier_targets: Box<[(usize, u64)]> = indices
-                .into_iter()
-                .map(|index| {
-                    let weight = targets.get(index).map_or(0, |target| u64::from(target.weight.get()));
-                    (index, weight)
-                })
-                .collect();
-            Tier {
-                targets: tier_targets,
-                cycle: WeightedCycle::new(),
-            }
-        })
-        .collect()
 }
 
 // -----------------------------------------------------------------------------
@@ -231,16 +189,20 @@ mod tests {
 
     use super::*;
 
-    fn target(name: &str, weight: u16, priority: u32) -> WeightedTarget {
-        WeightedTarget {
+    fn target(name: &str, weight: u16, priority: u32) -> praxis_core::config::WeightedTarget {
+        praxis_core::config::WeightedTarget {
             name: name.into(),
             weight: TargetWeight::try_from(weight).unwrap(),
             priority,
         }
     }
 
+    fn compile(targets: Vec<praxis_core::config::WeightedTarget>) -> CompiledTargets {
+        CompiledTargets::compile(&RouteTargets::try_new(targets).unwrap())
+    }
+
     fn counts(
-        selector: &mut ClusterSelector,
+        selector: &mut CompiledTargets,
         registry: Option<&HealthRegistry>,
         runs: usize,
     ) -> HashMap<String, usize> {
@@ -278,7 +240,7 @@ mod tests {
 
     #[test]
     fn nine_to_one_weights_split_accordingly() {
-        let mut selector = ClusterSelector::new(vec![target("stable", 9, 0), target("canary", 1, 0)]);
+        let mut selector = compile(vec![target("stable", 9, 0), target("canary", 1, 0)]);
         let seen = counts(&mut selector, None, 100);
         assert_eq!(seen.get("stable"), Some(&90), "stable should take ~90%: {seen:?}");
         assert_eq!(seen.get("canary"), Some(&10), "canary should take ~10%: {seen:?}");
@@ -286,8 +248,7 @@ mod tests {
 
     #[test]
     fn primary_tier_is_used_while_healthy() {
-        let mut selector =
-            ClusterSelector::new(vec![target("stable", 9, 0), target("canary", 1, 0), target("dr", 1, 1)]);
+        let mut selector = compile(vec![target("stable", 9, 0), target("canary", 1, 0), target("dr", 1, 1)]);
         let seen = counts(&mut selector, None, 100);
         assert!(
             !seen.contains_key("dr"),
@@ -297,8 +258,7 @@ mod tests {
 
     #[test]
     fn zero_healthy_canary_is_excluded_without_spilling() {
-        let mut selector =
-            ClusterSelector::new(vec![target("stable", 1, 0), target("canary", 1, 0), target("dr", 1, 1)]);
+        let mut selector = compile(vec![target("stable", 1, 0), target("canary", 1, 0), target("dr", 1, 1)]);
         let registry = registry(&[("stable", 1, &[]), ("canary", 1, &[0]), ("dr", 1, &[])]);
         let seen = counts(&mut selector, Some(&registry), 20);
         assert_eq!(seen.get("stable"), Some(&20), "stable serves every request: {seen:?}");
@@ -314,7 +274,7 @@ mod tests {
 
     #[test]
     fn fully_unhealthy_tier_spills_to_next() {
-        let mut selector = ClusterSelector::new(vec![
+        let mut selector = compile(vec![
             target("stable", 1, 0),
             target("canary", 1, 0),
             target("dr-a", 1, 1),
@@ -346,8 +306,7 @@ mod tests {
 
     #[test]
     fn all_unhealthy_enters_panic_mode_on_primary_tier() {
-        let mut selector =
-            ClusterSelector::new(vec![target("stable", 1, 0), target("canary", 1, 0), target("dr", 1, 1)]);
+        let mut selector = compile(vec![target("stable", 1, 0), target("canary", 1, 0), target("dr", 1, 1)]);
         let registry = registry(&[("stable", 1, &[0]), ("canary", 1, &[0]), ("dr", 1, &[0])]);
         let seen = counts(&mut selector, Some(&registry), 10);
         assert_eq!(
@@ -365,7 +324,7 @@ mod tests {
 
     #[test]
     fn missing_registry_treats_all_targets_as_eligible() {
-        let mut selector = ClusterSelector::new(vec![target("stable", 1, 0), target("canary", 1, 0)]);
+        let mut selector = compile(vec![target("stable", 1, 0), target("canary", 1, 0)]);
         let seen = counts(&mut selector, None, 10);
         assert_eq!(seen.get("stable"), Some(&5), "equal weights split evenly: {seen:?}");
         assert_eq!(seen.get("canary"), Some(&5), "equal weights split evenly: {seen:?}");
@@ -373,7 +332,7 @@ mod tests {
 
     #[test]
     fn untracked_cluster_is_eligible() {
-        let mut selector = ClusterSelector::new(vec![target("stable", 1, 0)]);
+        let mut selector = compile(vec![target("stable", 1, 0)]);
         let registry = registry(&[("other", 1, &[0])]);
         selector.bind_health(&registry);
         assert_eq!(
@@ -385,7 +344,7 @@ mod tests {
 
     #[test]
     fn equal_weights_alternate_deterministically() {
-        let selector = ClusterSelector::new(vec![target("a", 1, 0), target("b", 1, 0)]);
+        let selector = compile(vec![target("a", 1, 0), target("b", 1, 0)]);
         let mut picks = Vec::new();
         for _ in 0..4 {
             picks.push(selector.select().to_string());
@@ -399,7 +358,7 @@ mod tests {
 
     #[test]
     fn rebinding_health_replaces_previous_handles() {
-        let mut selector = ClusterSelector::new(vec![target("a", 1, 0), target("b", 1, 0)]);
+        let mut selector = compile(vec![target("a", 1, 0), target("b", 1, 0)]);
         let healthy = registry(&[("a", 1, &[]), ("b", 1, &[])]);
         selector.bind_health(&healthy);
 
