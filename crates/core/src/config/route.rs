@@ -1160,4 +1160,25 @@ weighted_clusters:
         assert_eq!(targets[0].weight, TargetWeight::DEFAULT);
         assert_eq!(targets[0].priority, 0);
     }
+
+    #[test]
+    fn single_weighted_target_with_custom_weight_stays_weighted() {
+        let yaml = weighted_route_yaml("    - name: only\n      weight: 5\n");
+        let route: Route = serde_yaml::from_str(&yaml).unwrap();
+        let out = serde_yaml::to_string(&route).unwrap();
+        assert!(
+            out.contains("weighted_clusters:"),
+            "a non-default weight must not collapse to the cluster shorthand: {out}"
+        );
+        assert!(
+            !out.contains("cluster: only"),
+            "the general form carries weight and priority: {out}"
+        );
+        let reparsed: Route = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(
+            reparsed.targets(),
+            route.targets(),
+            "the single weighted target must round-trip unchanged"
+        );
+    }
 }
