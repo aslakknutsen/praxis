@@ -406,6 +406,20 @@ mod tests {
     }
 
     #[test]
+    fn single_target_skips_the_cycle_and_health_gate() {
+        let mut selector = compile(vec![target("only", 5, 0)]);
+        let registry = registry(&[("only", 1, &[0])]);
+        selector.bind_health(&registry);
+        for _ in 0..3 {
+            assert_eq!(
+                &*selector.select(),
+                "only",
+                "a single target has nothing to rotate or spill to"
+            );
+        }
+    }
+
+    #[test]
     fn diagnostics_cover_primary_and_intermediate_tiers() {
         let mut selector = compile(vec![target("a", 1, 0), target("b", 1, 1), target("c", 1, 2)]);
         let empty: HealthRegistry = Arc::new(HashMap::new());
