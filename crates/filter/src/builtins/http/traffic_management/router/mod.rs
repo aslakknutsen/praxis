@@ -35,7 +35,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use http::header::HeaderName;
 use praxis_core::config::{PathMatch, Route};
-use tracing::{debug, info, trace, warn};
+#[cfg(feature = "upstream-binding")]
+use tracing::warn;
+use tracing::{debug, info, trace};
 
 #[cfg(feature = "router-json-aliases")]
 use self::config::{
@@ -44,7 +46,7 @@ use self::config::{
 use self::{
     config::{RouterConfig, RouterRouteConfig},
     matching::{PendingRouteHeaders, RouteHeaderSource, route_matches_request, should_stop_early, update_best_match},
-    selector::ClusterSelector,
+    selector::CompiledTargets,
 };
 #[cfg(feature = "upstream-binding")]
 use crate::pipeline::catalog::ClusterApplicationCatalog;
@@ -168,33 +170,8 @@ struct ResolvedRoute {
     /// The route's hedge policy, pre-wrapped so every request shares its budget.
     hedge_policy: Option<Arc<praxis_core::config::HedgePolicy>>,
 
-    /// Route-level cluster selector, carrying its own smooth-WRR state.
-    selector: ClusterSelector,
-}
-
-impl ResolvedRoute {
-    /// The route's only cluster when it uses the `cluster:` shorthand.
-    ///
-    /// `None` for a weighted route, which must go through the selector.
-    fn single_cluster(&self) -> Option<&Arc<str>> {
-        match self.route.targets() {
-            [target] => Some(&target.name),
-            _ => None,
-        }
-    }
-}
-
-/// Pick the cluster for a matched route.
-///
-/// A single-target route bypasses the selector: it has exactly one possible
-/// target, so the request pays neither the selector's lock nor a health lookup
-/// that could only return the same cluster. Weighted routes consult the
-/// route's selector, which applies tier and target weights.
-fn select_cluster(ctx: &HttpFilterContext<'_>, resolved: &ResolvedRoute) -> Option<Arc<str>> {
-    if let Some(cluster) = resolved.single_cluster() {
-        return Some(Arc::clone(cluster));
-    }
-    resolved.selector.select(ctx.health_registry)
+    /// Route-level cluster selection compiled once at pipeline build.
+    targets: CompiledTargets,
 }
 
 impl RouterFilter {
@@ -376,15 +353,7 @@ impl RouterFilter {
         expect(clippy::unused_self, reason = "only the binding catalog needs self")
     )]
     fn apply_matched_route(&self, ctx: &mut HttpFilterContext<'_>, resolved: &ResolvedRoute) -> FilterAction {
-        let Some(cluster) = select_cluster(ctx, resolved) else {
-            // Route validation rejects an empty target set, so this is a
-            // defensive 503 rather than a reachable configuration error.
-            warn!(
-                route = %resolved.route.path_match.value(),
-                "route has no selectable cluster; failing the request"
-            );
-            return FilterAction::Reject(Rejection::status(503));
-        };
+        let cluster = resolved.targets.select(ctx.health_registry);
 
         #[cfg(feature = "upstream-binding")]
         if let Some(catalog) = &self.binding_catalog
@@ -591,14 +560,14 @@ fn resolve_routes(routes: Vec<RouterRouteConfig>) -> Vec<ResolvedRoute> {
             });
             let retry_policy = route.retry_policy.clone().map(Arc::new);
             let hedge_policy = route.hedge_policy.clone().map(Arc::new);
-            let selector = ClusterSelector::new(route.targets().to_vec());
+            let targets = CompiledTargets::new(route.target.shared());
             ResolvedRoute {
                 route,
                 metrics_label,
                 wildcard_suffix,
                 retry_policy,
                 hedge_policy,
-                selector,
+                targets,
             }
         })
         .collect()

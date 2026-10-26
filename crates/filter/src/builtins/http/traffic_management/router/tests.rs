@@ -13,7 +13,7 @@ use super::config::{JsonAlias, RouterConfig, RouterRouteConfig};
 use super::{
     ResolvedRoute, RouterFilter,
     matching::{route_matches_request, should_stop_early, update_best_match},
-    selector::ClusterSelector,
+    selector::CompiledTargets,
 };
 use crate::{FilterAction, filter::HttpFilter as _};
 
@@ -1311,7 +1311,7 @@ async fn on_request_strips_port_from_host_header() {
 fn route_matches_request_path_only_hit() {
     let route = prefix_route("/api/", "api");
     let resolved = ResolvedRoute {
-        selector: ClusterSelector::new(route.targets().to_vec()),
+        targets: CompiledTargets::new(route.target.shared()),
         route,
         metrics_label: ::metrics::SharedString::const_str("/"),
         wildcard_suffix: None,
@@ -1328,7 +1328,7 @@ fn route_matches_request_path_only_hit() {
 fn route_matches_request_path_miss() {
     let route = prefix_route("/api/", "api");
     let resolved = ResolvedRoute {
-        selector: ClusterSelector::new(route.targets().to_vec()),
+        targets: CompiledTargets::new(route.target.shared()),
         route,
         metrics_label: ::metrics::SharedString::const_str("/"),
         wildcard_suffix: None,
@@ -1354,7 +1354,7 @@ fn route_matches_request_host_hit() {
         hedge_policy: None,
     };
     let resolved = ResolvedRoute {
-        selector: ClusterSelector::new(route.targets().to_vec()),
+        targets: CompiledTargets::new(route.target.shared()),
         route,
         metrics_label: ::metrics::SharedString::const_str("/"),
         wildcard_suffix: None,
@@ -1380,7 +1380,7 @@ fn route_matches_request_host_miss() {
         hedge_policy: None,
     };
     let resolved = ResolvedRoute {
-        selector: ClusterSelector::new(route.targets().to_vec()),
+        targets: CompiledTargets::new(route.target.shared()),
         route,
         metrics_label: ::metrics::SharedString::const_str("/"),
         wildcard_suffix: None,
@@ -1406,7 +1406,7 @@ fn route_matches_request_host_miss_when_no_host() {
         hedge_policy: None,
     };
     let resolved = ResolvedRoute {
-        selector: ClusterSelector::new(route.targets().to_vec()),
+        targets: CompiledTargets::new(route.target.shared()),
         route,
         metrics_label: ::metrics::SharedString::const_str("/"),
         wildcard_suffix: None,
@@ -1432,7 +1432,7 @@ fn route_matches_request_header_hit() {
         hedge_policy: None,
     };
     let resolved = ResolvedRoute {
-        selector: ClusterSelector::new(route.targets().to_vec()),
+        targets: CompiledTargets::new(route.target.shared()),
         route,
         metrics_label: ::metrics::SharedString::const_str("/"),
         wildcard_suffix: None,
@@ -1460,7 +1460,7 @@ fn route_matches_request_header_miss() {
         hedge_policy: None,
     };
     let resolved = ResolvedRoute {
-        selector: ClusterSelector::new(route.targets().to_vec()),
+        targets: CompiledTargets::new(route.target.shared()),
         route,
         metrics_label: ::metrics::SharedString::const_str("/"),
         wildcard_suffix: None,
@@ -1488,7 +1488,7 @@ fn route_matches_request_compound() {
         hedge_policy: None,
     };
     let resolved = ResolvedRoute {
-        selector: ClusterSelector::new(route.targets().to_vec()),
+        targets: CompiledTargets::new(route.target.shared()),
         route,
         metrics_label: ::metrics::SharedString::const_str("/"),
         wildcard_suffix: None,
@@ -1625,7 +1625,7 @@ fn route_matches_request_empty_headers_constraint() {
         hedge_policy: None,
     };
     let resolved = ResolvedRoute {
-        selector: ClusterSelector::new(route.targets().to_vec()),
+        targets: CompiledTargets::new(route.target.shared()),
         route,
         metrics_label: ::metrics::SharedString::const_str("/"),
         wildcard_suffix: None,
