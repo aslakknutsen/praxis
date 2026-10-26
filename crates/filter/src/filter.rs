@@ -169,8 +169,10 @@ pub trait HttpFilter: Send + Sync {
 
     /// The cluster names this filter may select at runtime.
     ///
-    /// Convenience wrapper around [`Self::for_each_selected_cluster`] for
-    /// tests and callers that need a borrowed list.
+    /// Test-only convenience wrapper around [`Self::for_each_selected_cluster`].
+    /// Production callers use the visitor so install-time validation does not
+    /// materialize a `Vec` only to copy it into a set.
+    #[cfg(test)]
     fn selected_clusters(&self) -> Vec<&str> {
         let mut out = Vec::new();
         self.for_each_selected_cluster(&mut |name| out.push(name));

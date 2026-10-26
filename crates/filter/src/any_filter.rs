@@ -86,6 +86,7 @@ impl AnyFilter {
     }
 
     /// Cluster names this filter may assign.
+    #[cfg(test)]
     pub fn selected_clusters(&self) -> Vec<&str> {
         match self {
             Self::Http(f) => f.selected_clusters(),
