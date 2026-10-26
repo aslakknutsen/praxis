@@ -14,7 +14,7 @@
 //! selected cluster are applied later by the `load_balancer` filter, so the
 //! effective share is `route_target_share * endpoint_share_within_cluster`.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use praxis_core::{
     config::WeightedTarget,
@@ -47,17 +47,17 @@ impl CompiledTargets {
     }
 
     /// Bind the pipeline's health handles, once per pipeline instance.
-    pub(crate) fn bind_health(&self, registry: &HealthRegistry) {
+    pub(crate) fn bind_health(&mut self, registry: &HealthRegistry) {
         if let Self::Weighted(selector) = self {
             selector.bind_health(registry);
         }
     }
 
     /// Select the cluster for one request.
-    pub(crate) fn select(&self, registry: Option<&HealthRegistry>) -> Arc<str> {
+    pub(crate) fn select(&self) -> Arc<str> {
         match self {
             Self::Single(cluster) => Arc::clone(cluster),
-            Self::Weighted(selector) => selector.select(registry),
+            Self::Weighted(selector) => selector.select(),
         }
     }
 }
@@ -89,7 +89,7 @@ pub(crate) struct ClusterSelector {
     /// Binding once removes a name-keyed registry lookup from the request path
     /// and makes the health source explicit: a target without a top-level
     /// health-checked cluster has no handle and stays eligible.
-    health: OnceLock<HealthHandles>,
+    health: Option<HealthHandles>,
 }
 
 /// One priority tier and its pre-computed weight total.
@@ -117,35 +117,35 @@ impl ClusterSelector {
             targets,
             tiers,
             fallback,
-            health: OnceLock::new(),
+            health: None,
         }
     }
 
     /// Resolve every target's health handle from the pipeline registry.
-    pub(crate) fn bind_health(&self, registry: &HealthRegistry) {
-        let handles: HealthHandles = self
-            .targets
-            .iter()
-            .map(|target| registry.get(&*target.name).cloned())
-            .collect();
-        self.health.get_or_init(|| handles);
+    pub(crate) fn bind_health(&mut self, registry: &HealthRegistry) {
+        self.health = Some(
+            self.targets
+                .iter()
+                .map(|target| registry.get(&*target.name).cloned())
+                .collect(),
+        );
     }
 
-    /// Select a cluster, honoring cluster health when a registry is available.
+    /// Select a cluster, honoring cluster health when it was bound.
     ///
     /// Tiers are tried in order, and the first one with an eligible target
     /// provides the cluster. A health change that empties a tier spills to the
     /// next one instead of failing the request.
     ///
     /// Selection is infallible: a route target set is never empty.
-    pub(crate) fn select(&self, registry: Option<&HealthRegistry>) -> Arc<str> {
-        self.try_select(registry).unwrap_or_else(|| Arc::clone(&self.fallback))
+    pub(crate) fn select(&self) -> Arc<str> {
+        self.try_select().unwrap_or_else(|| Arc::clone(&self.fallback))
     }
 
     /// Try each tier in order, then fan out to the primary tier in panic mode.
-    fn try_select(&self, registry: Option<&HealthRegistry>) -> Option<Arc<str>> {
+    fn try_select(&self) -> Option<Arc<str>> {
         for tier in &self.tiers {
-            if let Some(cluster) = self.select_from_tier(tier, registry) {
+            if let Some(cluster) = self.select_from_tier(tier, true) {
                 return Some(cluster);
             }
         }
@@ -154,53 +154,49 @@ impl ClusterSelector {
         // target, so use the highest-priority tier regardless of health and let
         // the downstream load balancer panic too.
         let tier = self.tiers.first()?;
-        self.select_from_tier(tier, None)
+        self.select_from_tier(tier, false)
     }
 
     /// Whether a target's cluster can serve traffic.
     ///
-    /// A bound health handle wins over the request-scoped registry. No handle,
-    /// or a cluster absent from the registry, means "eligible": untracked
-    /// clusters are not health-gated. A tracked cluster needs at least one
-    /// healthy endpoint. Total endpoint count is not otherwise weighed here;
-    /// endpoint capacity and overprovisioning stay in the load balancer.
-    fn eligible(&self, index: usize, registry: Option<&HealthRegistry>) -> bool {
-        let Some(target) = self.targets.get(index) else {
+    /// No bound handle, or a cluster absent from the registry, means
+    /// "eligible": untracked clusters are not health-gated. A tracked cluster
+    /// needs at least one healthy endpoint. Total endpoint count is not
+    /// otherwise weighed here; endpoint capacity and overprovisioning stay in
+    /// the load balancer.
+    fn eligible(&self, index: usize, require_health: bool) -> bool {
+        if self.targets.get(index).is_none() {
             return false;
-        };
-        if let Some(handles) = self.health.get() {
-            return handles
-                .get(index)
-                .and_then(Option::as_ref)
-                .is_none_or(|entry| entry.endpoint_counts().0 > 0);
         }
-        let Some(registry) = registry else {
+        if !require_health {
             return true;
-        };
-        registry
-            .get(&*target.name)
-            .is_none_or(|state| state.endpoint_counts().0 > 0)
+        }
+        self.health
+            .as_ref()
+            .and_then(|handles| handles.get(index))
+            .and_then(Option::as_ref)
+            .is_none_or(|entry| entry.endpoint_counts().0 > 0)
     }
 
     /// Weighted round-robin across one pre-computed tier.
-    fn select_from_tier(&self, tier: &Tier, registry: Option<&HealthRegistry>) -> Option<Arc<str>> {
-        let total = self.eligible_weight(tier, registry)?;
+    fn select_from_tier(&self, tier: &Tier, require_health: bool) -> Option<Arc<str>> {
+        let total = self.eligible_weight(tier, require_health)?;
         let slot = tier.cycle.next().checked_rem(total)?;
         let winner = pick_weighted(
             slot,
             tier.targets
                 .iter()
-                .filter_map(|&(index, weight)| self.eligible(index, registry).then_some((index, weight))),
+                .filter_map(|&(index, weight)| self.eligible(index, require_health).then_some((index, weight))),
         )?;
         self.targets.get(winner).map(|target| target.name.shared())
     }
 
     /// Sum the weights of the tier's eligible targets.
-    fn eligible_weight(&self, tier: &Tier, registry: Option<&HealthRegistry>) -> Option<u64> {
+    fn eligible_weight(&self, tier: &Tier, require_health: bool) -> Option<u64> {
         let mut total = tier.total_weight;
         let mut any = false;
         for &(index, weight) in &tier.targets {
-            if self.eligible(index, registry) {
+            if self.eligible(index, require_health) {
                 any = true;
             } else {
                 total = total.saturating_sub(weight);
@@ -266,10 +262,17 @@ mod tests {
         }
     }
 
-    fn counts(selector: &ClusterSelector, registry: Option<&HealthRegistry>, runs: usize) -> HashMap<String, usize> {
+    fn counts(
+        selector: &mut ClusterSelector,
+        registry: Option<&HealthRegistry>,
+        runs: usize,
+    ) -> HashMap<String, usize> {
+        if let Some(registry) = registry {
+            selector.bind_health(registry);
+        }
         let mut seen = HashMap::new();
         for _ in 0..runs {
-            let selected = selector.select(registry);
+            let selected = selector.select();
             *seen.entry(selected.to_string()).or_insert(0) += 1;
         }
         seen
@@ -298,16 +301,17 @@ mod tests {
 
     #[test]
     fn nine_to_one_weights_split_accordingly() {
-        let selector = ClusterSelector::new(vec![target("stable", 9, 0), target("canary", 1, 0)]);
-        let seen = counts(&selector, None, 100);
+        let mut selector = ClusterSelector::new(vec![target("stable", 9, 0), target("canary", 1, 0)]);
+        let seen = counts(&mut selector, None, 100);
         assert_eq!(seen.get("stable"), Some(&90), "stable should take ~90%: {seen:?}");
         assert_eq!(seen.get("canary"), Some(&10), "canary should take ~10%: {seen:?}");
     }
 
     #[test]
     fn primary_tier_is_used_while_healthy() {
-        let selector = ClusterSelector::new(vec![target("stable", 9, 0), target("canary", 1, 0), target("dr", 1, 1)]);
-        let seen = counts(&selector, None, 100);
+        let mut selector =
+            ClusterSelector::new(vec![target("stable", 9, 0), target("canary", 1, 0), target("dr", 1, 1)]);
+        let seen = counts(&mut selector, None, 100);
         assert!(
             !seen.contains_key("dr"),
             "a healthy primary tier must not spill: {seen:?}"
@@ -316,9 +320,10 @@ mod tests {
 
     #[test]
     fn zero_healthy_canary_is_excluded_without_spilling() {
-        let selector = ClusterSelector::new(vec![target("stable", 1, 0), target("canary", 1, 0), target("dr", 1, 1)]);
+        let mut selector =
+            ClusterSelector::new(vec![target("stable", 1, 0), target("canary", 1, 0), target("dr", 1, 1)]);
         let registry = registry(&[("stable", 1, &[]), ("canary", 1, &[0]), ("dr", 1, &[])]);
-        let seen = counts(&selector, Some(&registry), 20);
+        let seen = counts(&mut selector, Some(&registry), 20);
         assert_eq!(seen.get("stable"), Some(&20), "stable serves every request: {seen:?}");
         assert!(
             !seen.contains_key("canary"),
@@ -332,7 +337,7 @@ mod tests {
 
     #[test]
     fn fully_unhealthy_tier_spills_to_next() {
-        let selector = ClusterSelector::new(vec![
+        let mut selector = ClusterSelector::new(vec![
             target("stable", 1, 0),
             target("canary", 1, 0),
             target("dr-a", 1, 1),
@@ -344,7 +349,7 @@ mod tests {
             ("dr-a", 1, &[]),
             ("dr-b", 1, &[]),
         ]);
-        let seen = counts(&selector, Some(&registry), 10);
+        let seen = counts(&mut selector, Some(&registry), 10);
         assert_eq!(
             seen.get("dr-a"),
             Some(&5),
@@ -364,9 +369,10 @@ mod tests {
 
     #[test]
     fn all_unhealthy_enters_panic_mode_on_primary_tier() {
-        let selector = ClusterSelector::new(vec![target("stable", 1, 0), target("canary", 1, 0), target("dr", 1, 1)]);
+        let mut selector =
+            ClusterSelector::new(vec![target("stable", 1, 0), target("canary", 1, 0), target("dr", 1, 1)]);
         let registry = registry(&[("stable", 1, &[0]), ("canary", 1, &[0]), ("dr", 1, &[0])]);
-        let seen = counts(&selector, Some(&registry), 10);
+        let seen = counts(&mut selector, Some(&registry), 10);
         assert_eq!(
             seen.get("stable"),
             Some(&5),
@@ -382,18 +388,19 @@ mod tests {
 
     #[test]
     fn missing_registry_treats_all_targets_as_eligible() {
-        let selector = ClusterSelector::new(vec![target("stable", 1, 0), target("canary", 1, 0)]);
-        let seen = counts(&selector, None, 10);
+        let mut selector = ClusterSelector::new(vec![target("stable", 1, 0), target("canary", 1, 0)]);
+        let seen = counts(&mut selector, None, 10);
         assert_eq!(seen.get("stable"), Some(&5), "equal weights split evenly: {seen:?}");
         assert_eq!(seen.get("canary"), Some(&5), "equal weights split evenly: {seen:?}");
     }
 
     #[test]
     fn untracked_cluster_is_eligible() {
-        let selector = ClusterSelector::new(vec![target("stable", 1, 0)]);
+        let mut selector = ClusterSelector::new(vec![target("stable", 1, 0)]);
         let registry = registry(&[("other", 1, &[0])]);
+        selector.bind_health(&registry);
         assert_eq!(
-            &*selector.select(Some(&registry)),
+            &*selector.select(),
             "stable",
             "a cluster absent from the registry is not health-gated"
         );
@@ -404,7 +411,7 @@ mod tests {
         let selector = ClusterSelector::new(vec![target("a", 1, 0), target("b", 1, 0)]);
         let mut picks = Vec::new();
         for _ in 0..4 {
-            picks.push(selector.select(None).to_string());
+            picks.push(selector.select().to_string());
         }
         assert_eq!(
             picks,
@@ -414,16 +421,17 @@ mod tests {
     }
 
     #[test]
-    fn bound_health_handles_win_over_the_request_registry() {
-        let selector = ClusterSelector::new(vec![target("a", 1, 0), target("b", 1, 0)]);
+    fn rebinding_health_replaces_previous_handles() {
+        let mut selector = ClusterSelector::new(vec![target("a", 1, 0), target("b", 1, 0)]);
         let healthy = registry(&[("a", 1, &[]), ("b", 1, &[])]);
         selector.bind_health(&healthy);
 
-        // A later registry marks `a` dead, but the selector keeps the handles
-        // resolved when the pipeline was installed.
+        // A later binding marks `a` dead; selection follows the latest handles
+        // rather than sticking to the first install.
         let dead = registry(&[("a", 1, &[0]), ("b", 1, &[])]);
-        let seen = counts(&selector, Some(&dead), 10);
-        assert_eq!(seen.get("a"), Some(&5), "bound health must win: {seen:?}");
-        assert_eq!(seen.get("b"), Some(&5), "bound health must win: {seen:?}");
+        selector.bind_health(&dead);
+        let seen = counts(&mut selector, None, 10);
+        assert_eq!(seen.get("a"), None, "the latest binding gates selection: {seen:?}");
+        assert_eq!(seen.get("b"), Some(&10), "the latest binding gates selection: {seen:?}");
     }
 }

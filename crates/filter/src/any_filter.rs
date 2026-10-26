@@ -45,7 +45,7 @@ impl AnyFilter {
     }
 
     /// Bind pipeline-wide cluster health state.
-    pub fn bind_health(&self, registry: &praxis_core::health::HealthRegistry) {
+    pub fn bind_health(&mut self, registry: &praxis_core::health::HealthRegistry) {
         match self {
             Self::Http(f) => f.bind_health(registry),
             Self::Tcp(_) => {},

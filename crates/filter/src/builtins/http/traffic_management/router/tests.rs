@@ -199,7 +199,7 @@ async fn on_request_spreads_requests_across_weighted_targets() {
 async fn on_request_excludes_weighted_target_with_no_healthy_endpoints() {
     use praxis_core::health::{ClusterHealthEntry, EndpointHealth, HealthRegistry};
 
-    let router = make_router(vec![weighted_route(
+    let mut router = make_router(vec![weighted_route(
         "/",
         &[("stable", 1, 0), ("canary", 1, 0), ("dr", 1, 1)],
     )]);
@@ -221,11 +221,11 @@ async fn on_request_excludes_weighted_target_with_no_healthy_endpoints() {
         (Arc::from("canary"), entry(false)),
         (Arc::from("dr"), entry(true)),
     ]));
+    router.bind_health(&registry);
 
     for _ in 0..10 {
         let req = crate::test_utils::make_request(http::Method::GET, "/");
         let mut ctx = crate::test_utils::make_filter_context(&req);
-        ctx.health_registry = Some(&registry);
         assert!(
             matches!(router.on_request(&mut ctx).await.unwrap(), FilterAction::Continue),
             "the healthy primary tier should continue the pipeline"
@@ -242,7 +242,7 @@ async fn on_request_excludes_weighted_target_with_no_healthy_endpoints() {
 async fn bind_health_caches_target_health_for_the_pipeline() {
     use praxis_core::health::{ClusterHealthEntry, EndpointHealth, HealthRegistry};
 
-    let router = make_router(vec![weighted_route("/", &[("stable", 1, 0), ("canary", 1, 0)])]);
+    let mut router = make_router(vec![weighted_route("/", &[("stable", 1, 0), ("canary", 1, 0)])]);
     let entry = |healthy: bool| {
         let endpoint = EndpointHealth::new();
         if !healthy {

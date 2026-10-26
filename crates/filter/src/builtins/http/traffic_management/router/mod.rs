@@ -381,7 +381,7 @@ impl RouterFilter {
         expect(clippy::unused_self, reason = "only the binding catalog needs self")
     )]
     fn apply_matched_route(&self, ctx: &mut HttpFilterContext<'_>, resolved: &ResolvedRoute) -> FilterAction {
-        let cluster = resolved.targets.select(ctx.health_registry);
+        let cluster = resolved.targets.select();
 
         #[cfg(feature = "upstream-binding")]
         if let Some(catalog) = &self.binding_catalog
@@ -668,8 +668,8 @@ impl HttpFilter for RouterFilter {
             .collect()
     }
 
-    fn bind_health(&self, registry: &HealthRegistry) {
-        for resolved in &self.routes {
+    fn bind_health(&mut self, registry: &HealthRegistry) {
+        for resolved in &mut self.routes {
             resolved.targets.bind_health(registry);
             warn_unhealthy_priority_targets(resolved, registry);
         }

@@ -88,7 +88,7 @@ pub trait HttpFilter: Send + Sync {
     /// handles once instead of looking them up per request. Filters without a
     /// health-based decision keep the default no-op.
     #[doc(hidden)]
-    fn bind_health(&self, _registry: &HealthRegistry) {}
+    fn bind_health(&mut self, _registry: &HealthRegistry) {}
 
     /// Called for each incoming request, in pipeline order.
     async fn on_request(&self, ctx: &mut HttpFilterContext<'_>) -> Result<FilterAction, FilterError>;

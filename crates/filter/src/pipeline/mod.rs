@@ -530,7 +530,7 @@ impl FilterPipeline {
     /// Set the shared [`HealthRegistry`] for this pipeline.
     pub fn set_health_registry(&mut self, registry: HealthRegistry) {
         self.visit_nested_pipelines(&mut |pipeline| pipeline.set_health_registry(Arc::clone(&registry)));
-        for_each_pipeline_filter(&self.filters, &mut |filter| {
+        for_each_pipeline_filter_mut(&mut self.filters, &mut |filter| {
             filter.filter.bind_health(&registry);
         });
         self.health_registry = Some(registry);
@@ -813,6 +813,16 @@ fn for_each_pipeline_filter(filters: &[PipelineFilter], visit: &mut dyn FnMut(&P
         visit(pf);
         for branch in &pf.branches {
             for_each_pipeline_filter(&branch.filters, visit);
+        }
+    }
+}
+
+/// Mutable variant of [`for_each_pipeline_filter`] for install-time binding.
+fn for_each_pipeline_filter_mut(filters: &mut [PipelineFilter], visit: &mut dyn FnMut(&mut PipelineFilter)) {
+    for pf in filters {
+        visit(pf);
+        for branch in &mut pf.branches {
+            for_each_pipeline_filter_mut(&mut branch.filters, visit);
         }
     }
 }
