@@ -51,6 +51,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- Routes reject an empty `cluster` or `weighted_clusters[].name` at config
+  load instead of accepting a destination that can never resolve. The
+  shorthand and the weighted form now share the same non-empty name type.
+- `weighted_clusters` failover-tier diagnostics now run even when no cluster
+  declares a health check, so a priority tier that cannot be spilled to no
+  longer fails silently.
 - The FIPS runtime probe selects the Pingora backend when compiling its
   listener tests with default features disabled.
 - The Hyper backend rejects reserved client trailer names before forwarding
