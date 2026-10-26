@@ -44,10 +44,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   with struct literals or read `cluster` directly must move to `target`;
   `Route::targets()` returns the canonical target slice. The YAML `cluster:`
   key is unchanged.
-- **Breaking:** Rust API: `HttpFilter::selected_clusters` now returns
-  `Vec<&str>` instead of `Vec<String>`, so a filter borrows its configured
-  cluster names instead of allocating them. Custom filters must update the
-  return type; pipeline checks copy names only where they build owned sets.
+- **Breaking:** Rust API: `HttpFilter::selected_clusters` is replaced by
+  `for_each_selected_cluster`, a visitor that borrows each configured cluster
+  name. Custom filters implement the visitor; the allocating
+  `selected_clusters` wrapper is test-only.
+- **Breaking:** Rust API: `ClusterHealthEntry::has_healthy_endpoint` is
+  replaced by `is_available`, backed by an incrementally maintained healthy
+  endpoint count.
+- **Breaking:** Rust API: `WeightedClusters` and `route_label` are no longer
+  exported, and `RouteTargets::single` takes a `ClusterName` instead of
+  accepting arbitrary `Into<ClusterName>` input.
 
 ### Fixed
 
@@ -55,8 +61,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   load instead of accepting a destination that can never resolve. The
   shorthand and the weighted form now share the same non-empty name type.
 - `weighted_clusters` failover-tier diagnostics now run even when no cluster
-  declares a health check, so a priority tier that cannot be spilled to no
-  longer fails silently.
+  declares a health check, and cover every tier above the last, so a primary
+  or intermediate tier that can never spill no longer fails silently.
 - The FIPS runtime probe selects the Pingora backend when compiling its
   listener tests with default features disabled.
 - The Hyper backend rejects reserved client trailer names before forwarding

@@ -281,9 +281,12 @@ Target health is read from the top-level
 `clusters` registry, bound once when the pipeline
 is installed. A target whose cluster has no
 top-level `health_check` has no health state and
-stays eligible; give every target in a failover
-tier a health-checked top-level cluster, or the
-tier cannot spill.
+stays eligible. A tier containing such a target
+can never be marked fully unhealthy, so it never
+spills to lower-priority tiers: only the last tier
+may safely omit health checks. During install the
+router warns when a primary or intermediate tier
+has an untracked target.
 
 The two kinds of weight compose multiplicatively:
 
