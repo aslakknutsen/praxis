@@ -42,6 +42,9 @@ pub(crate) struct CompiledTargets {
 /// One priority tier.
 #[derive(Debug)]
 struct Tier {
+    /// Priority number from the route config; lower is preferred.
+    priority: u32,
+
     /// Compiled targets in configuration order; index order is the tie-break.
     targets: Box<[CompiledTarget]>,
 
@@ -87,10 +90,11 @@ impl CompiledTargets {
                 });
         }
         let tiers = by_priority
-            .into_values()
-            .map(|targets| {
+            .into_iter()
+            .map(|(priority, targets)| {
                 let total_weight = targets.iter().fold(0_u64, |total, target| total.saturating_add(target.weight));
                 Tier {
+                    priority,
                     cycle: (targets.len() > 1).then(WeightedCycle::new),
                     targets: targets.into_boxed_slice(),
                     total_weight,
@@ -108,6 +112,38 @@ impl CompiledTargets {
                 target.health = registry.get(&*target.name).cloned();
             }
             tier.health_gated = tier.targets.iter().any(|target| target.health.is_some());
+        }
+    }
+
+    /// Pass every cluster name this compiled set may select to `sink`.
+    pub(crate) fn for_each_name<'a>(&'a self, sink: &mut dyn FnMut(&'a str)) {
+        for tier in &self.tiers {
+            for target in &tier.targets {
+                sink(&target.name);
+            }
+        }
+    }
+
+    /// Warn when a failover target can never be gated by health.
+    ///
+    /// A target whose cluster has no top-level `health_check` has no registry
+    /// entry, so it stays eligible and its priority tier never spills. That is
+    /// valid for a single-target set, but a silent misconfiguration for a
+    /// failover tier.
+    pub(crate) fn warn_unhealthy_priority_targets(&self, route: &str) {
+        for tier in &self.tiers {
+            if tier.priority == 0 {
+                continue;
+            }
+            for target in &tier.targets {
+                if target.health.is_none() {
+                    tracing::warn!(
+                        cluster = %target.name,
+                        route = %route,
+                        "weighted target has no health state; its priority tier cannot spill"
+                    );
+                }
+            }
         }
     }
 

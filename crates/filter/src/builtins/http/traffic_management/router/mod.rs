@@ -38,7 +38,7 @@ use praxis_core::{
     config::{PathMatch, Route},
     health::HealthRegistry,
 };
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, trace};
 
 #[cfg(feature = "router-json-aliases")]
 use self::config::{
@@ -179,27 +179,6 @@ struct ResolvedRoute {
 
     /// Route-level cluster selection compiled once at pipeline build.
     targets: CompiledTargets,
-}
-
-/// Warn when a failover target can never be gated by health.
-///
-/// A target whose cluster has no top-level `health_check` has no registry
-/// entry, so it stays eligible and its priority tier never spills. That is
-/// valid for a single-target set, but a silent misconfiguration for a failover
-/// tier.
-fn warn_unhealthy_priority_targets(resolved: &ResolvedRoute, registry: &HealthRegistry) {
-    if resolved.route.targets().len() < 2 {
-        return;
-    }
-    for target in resolved.route.targets() {
-        if target.priority > 0 && registry.get(&*target.name).is_none() {
-            warn!(
-                cluster = %target.name,
-                route = %resolved.route.path_match.value(),
-                "weighted target has no health state; its priority tier cannot spill"
-            );
-        }
-    }
 }
 
 impl RouterFilter {
@@ -387,7 +366,7 @@ impl RouterFilter {
         if let Some(catalog) = &self.binding_catalog
             && let Err(frozen) = ctx.bind_upstream(Arc::clone(&cluster), catalog)
         {
-            warn!(
+            tracing::warn!(
                 frozen = %frozen.frozen,
                 attempted = %frozen.attempted,
                 "router attempted to rebind a frozen logical upstream; failing closed",
@@ -663,16 +642,16 @@ impl HttpFilter for RouterFilter {
 
     fn for_each_selected_cluster<'a>(&'a self, sink: &mut dyn FnMut(&'a str)) {
         for route in &self.routes {
-            for target in route.route.targets() {
-                sink(target.name.as_ref());
-            }
+            route.targets.for_each_name(sink);
         }
     }
 
     fn bind_health(&mut self, registry: &HealthRegistry) {
         for resolved in &mut self.routes {
             resolved.targets.bind_health(registry);
-            warn_unhealthy_priority_targets(resolved, registry);
+            resolved
+                .targets
+                .warn_unhealthy_priority_targets(resolved.route.path_match.value());
         }
     }
 
