@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use praxis_core::config::InsecureOptions;
+use praxis_core::{config::InsecureOptions, health::HealthRegistry};
 
 pub(crate) use crate::context::HttpFilterContext;
 #[cfg(feature = "upstream-binding")]
@@ -80,6 +80,15 @@ pub trait HttpFilter: Send + Sync {
     #[doc(hidden)]
     #[cfg(feature = "slow-start")]
     fn bind_slow_start(&self, _registry: &Arc<crate::SlowStartRegistry>) {}
+
+    /// Bind pipeline-wide cluster health state.
+    ///
+    /// Framework-internal. Called once while the pipeline is installed, before
+    /// the first request, so a filter that routes on cluster health can resolve
+    /// handles once instead of looking them up per request. Filters without a
+    /// health-based decision keep the default no-op.
+    #[doc(hidden)]
+    fn bind_health(&self, _registry: &HealthRegistry) {}
 
     /// Called for each incoming request, in pipeline order.
     async fn on_request(&self, ctx: &mut HttpFilterContext<'_>) -> Result<FilterAction, FilterError>;

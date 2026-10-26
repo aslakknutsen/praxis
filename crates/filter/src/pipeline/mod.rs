@@ -530,6 +530,9 @@ impl FilterPipeline {
     /// Set the shared [`HealthRegistry`] for this pipeline.
     pub fn set_health_registry(&mut self, registry: HealthRegistry) {
         self.visit_nested_pipelines(&mut |pipeline| pipeline.set_health_registry(Arc::clone(&registry)));
+        for_each_pipeline_filter(&self.filters, &mut |filter| {
+            filter.filter.bind_health(&registry);
+        });
         self.health_registry = Some(registry);
     }
 

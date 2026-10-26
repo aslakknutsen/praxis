@@ -34,10 +34,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use http::header::HeaderName;
-use praxis_core::config::{PathMatch, Route};
-#[cfg(feature = "upstream-binding")]
-use tracing::warn;
-use tracing::{debug, info, trace};
+use praxis_core::{
+    config::{PathMatch, Route},
+    health::HealthRegistry,
+};
+use tracing::{debug, info, trace, warn};
 
 #[cfg(feature = "router-json-aliases")]
 use self::config::{
@@ -74,10 +75,16 @@ use crate::{
 /// Weighted targets are grouped by `priority`; the router uses the
 /// lowest-priority-number tier with at least one healthy target (a target is
 /// healthy when its cluster has at least one healthy endpoint), then selects
-/// within that tier by smooth weighted round-robin. It spills to the next tier
-/// only when the current tier has no healthy target. Endpoint weights inside
-/// the selected cluster apply on top, so the effective share is
+/// within that tier by weighted round-robin. It spills to the next tier only
+/// when the current tier has no healthy target. Endpoint weights inside the
+/// selected cluster apply on top, so the effective share is
 /// `route_target_share * endpoint_share_within_cluster`.
+///
+/// Target health comes from the pipeline's top-level cluster registry, bound
+/// once at pipeline install. A target whose cluster has no top-level
+/// `health_check` has no health state and stays eligible, so a failover tier
+/// only spills when every target in the active tier is a health-checked
+/// cluster.
 ///
 /// The selected cluster is sticky for the request, including retries, but not
 /// across router re-entry: a branch chain's backward `ReEnter` runs the router
@@ -172,6 +179,27 @@ struct ResolvedRoute {
 
     /// Route-level cluster selection compiled once at pipeline build.
     targets: CompiledTargets,
+}
+
+/// Warn when a failover target can never be gated by health.
+///
+/// A target whose cluster has no top-level `health_check` has no registry
+/// entry, so it stays eligible and its priority tier never spills. That is
+/// valid for a single-target set, but a silent misconfiguration for a failover
+/// tier.
+fn warn_unhealthy_priority_targets(resolved: &ResolvedRoute, registry: &HealthRegistry) {
+    if resolved.route.targets().len() < 2 {
+        return;
+    }
+    for target in resolved.route.targets() {
+        if target.priority > 0 && registry.get(&*target.name).is_none() {
+            warn!(
+                cluster = %target.name,
+                route = %resolved.route.path_match.value(),
+                "weighted target has no health state; its priority tier cannot spill"
+            );
+        }
+    }
 }
 
 impl RouterFilter {
@@ -638,6 +666,13 @@ impl HttpFilter for RouterFilter {
             .iter()
             .flat_map(|route| route.route.targets().iter().map(|target| target.name.to_string()))
             .collect()
+    }
+
+    fn bind_health(&self, registry: &HealthRegistry) {
+        for resolved in &self.routes {
+            resolved.targets.bind_health(registry);
+            warn_unhealthy_priority_targets(resolved, registry);
+        }
     }
 
     #[cfg(feature = "upstream-binding")]

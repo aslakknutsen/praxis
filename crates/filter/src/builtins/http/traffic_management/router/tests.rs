@@ -239,6 +239,44 @@ async fn on_request_excludes_weighted_target_with_no_healthy_endpoints() {
 }
 
 #[tokio::test]
+async fn bind_health_caches_target_health_for_the_pipeline() {
+    use praxis_core::health::{ClusterHealthEntry, EndpointHealth, HealthRegistry};
+
+    let router = make_router(vec![weighted_route("/", &[("stable", 1, 0), ("canary", 1, 0)])]);
+    let entry = |healthy: bool| {
+        let endpoint = EndpointHealth::new();
+        if !healthy {
+            endpoint.mark_unhealthy();
+        }
+        Arc::new(ClusterHealthEntry::new(
+            vec![endpoint],
+            vec![Arc::from("10.0.0.1:80")],
+            None,
+            None,
+        ))
+    };
+    let registry: HealthRegistry = Arc::new(HashMap::from([
+        (Arc::from("stable"), entry(false)),
+        (Arc::from("canary"), entry(true)),
+    ]));
+
+    router.bind_health(&registry);
+    for _ in 0..5 {
+        let req = crate::test_utils::make_request(http::Method::GET, "/");
+        let mut ctx = crate::test_utils::make_filter_context(&req);
+        assert!(
+            matches!(router.on_request(&mut ctx).await.unwrap(), FilterAction::Continue),
+            "the healthy target should continue the pipeline"
+        );
+        assert_eq!(
+            ctx.cluster.as_deref(),
+            Some("canary"),
+            "the router must use health handles bound at pipeline install"
+        );
+    }
+}
+
+#[tokio::test]
 async fn on_request_routes_shorthand_route_despite_unhealthy_cluster() {
     use praxis_core::health::{ClusterHealthEntry, EndpointHealth, HealthRegistry};
 

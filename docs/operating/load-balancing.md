@@ -268,7 +268,7 @@ filters:
 ```
 
 The router selects one cluster per request with
-smooth weighted round-robin. Targets sharing a
+weighted round-robin. Targets sharing a
 `priority` form a tier; the router uses the lowest
 priority number with at least one healthy cluster
 and spills to the next tier only when the active
@@ -276,6 +276,14 @@ tier has no healthy cluster. A target is healthy
 when its cluster has at least one healthy endpoint.
 `cluster: name` is shorthand for a single target
 with weight 1 and priority 0.
+
+Target health is read from the top-level
+`clusters` registry, bound once when the pipeline
+is installed. A target whose cluster has no
+top-level `health_check` has no health state and
+stays eligible; give every target in a failover
+tier a health-checked top-level cluster, or the
+tier cannot spill.
 
 The two kinds of weight compose multiplicatively:
 

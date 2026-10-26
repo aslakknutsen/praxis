@@ -12,6 +12,12 @@
 # target_weight / tier_total multiplied by the endpoint's share
 # inside the selected cluster.
 #
+# Route-target health comes from the top-level `clusters` below,
+# bound once when the pipeline is installed. The load_balancer repeats
+# the same endpoints so it can build its own cluster entries. Every
+# failover target needs a health-checked top-level cluster, or its
+# priority tier cannot spill.
+#
 #   ┌────────┐
 #   │ client │
 #   └───┬────┘

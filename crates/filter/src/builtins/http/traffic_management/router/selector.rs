@@ -5,24 +5,26 @@
 //!
 //! A route may name one cluster (the `cluster:` shorthand) or several weighted
 //! targets split into priority tiers (`weighted_clusters:`). The selector picks
-//! one cluster per request using smooth weighted round-robin within the first
-//! tier that has a healthy target, spilling to the next tier only when the
-//! current one has none.
+//! one cluster per request using weighted round-robin within the first tier that
+//! has a healthy target, spilling to the next tier only when the current one has
+//! none.
 //!
 //! Health is judged per cluster, not per endpoint: a target is eligible when
 //! its cluster has at least one healthy endpoint. Endpoint weights inside the
 //! selected cluster are applied later by the `load_balancer` filter, so the
 //! effective share is `route_target_share * endpoint_share_within_cluster`.
 
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex, PoisonError},
+use std::sync::{Arc, OnceLock};
+
+use praxis_core::{
+    config::WeightedTarget,
+    health::{ClusterHealthEntry, HealthRegistry},
 };
 
-use praxis_core::{config::WeightedTarget, health::HealthRegistry};
+use crate::load_balancing::weighted_cycle::{WeightedCycle, pick_weighted};
 
 // -----------------------------------------------------------------------------
-// ClusterSelector
+// CompiledTargets
 // -----------------------------------------------------------------------------
 
 /// A route's compiled cluster destinations.
@@ -44,6 +46,13 @@ impl CompiledTargets {
         }
     }
 
+    /// Bind the pipeline's health handles, once per pipeline instance.
+    pub(crate) fn bind_health(&self, registry: &HealthRegistry) {
+        if let Self::Weighted(selector) = self {
+            selector.bind_health(registry);
+        }
+    }
+
     /// Select the cluster for one request.
     pub(crate) fn select(&self, registry: Option<&HealthRegistry>) -> Arc<str> {
         match self {
@@ -53,6 +62,13 @@ impl CompiledTargets {
     }
 }
 
+// -----------------------------------------------------------------------------
+// ClusterSelector
+// -----------------------------------------------------------------------------
+
+/// Health handles aligned with a selector's target list.
+type HealthHandles = Box<[Option<Arc<ClusterHealthEntry>>]>;
+
 /// Selects one cluster from a route's weighted targets.
 #[derive(Debug)]
 pub(crate) struct ClusterSelector {
@@ -61,59 +77,32 @@ pub(crate) struct ClusterSelector {
 
     /// Target indices grouped by priority tier, lowest priority number first.
     ///
-    /// Each tier pre-computes its total weight once, so request-time selection
-    /// only visits the active tier's targets.
+    /// Each tier carries its own weight total and round-robin cycle, so
+    /// request-time selection only visits the active tier's targets.
     tiers: Box<[Tier]>,
 
     /// First target name, used if a selector is built without targets.
     fallback: Arc<str>,
 
-    /// Smooth weighted round-robin scores, one per target.
+    /// Health handles resolved at pipeline install.
     ///
-    /// A short critical section keeps score updates atomic per request without
-    /// blocking unrelated routes (each selector owns its scores).
-    state: Mutex<SelectorState>,
+    /// Binding once removes a name-keyed registry lookup from the request path
+    /// and makes the health source explicit: a target without a top-level
+    /// health-checked cluster has no handle and stays eligible.
+    health: OnceLock<HealthHandles>,
 }
 
 /// One priority tier and its pre-computed weight total.
 #[derive(Debug)]
 struct Tier {
-    /// Target indices in configuration order.
-    indices: Box<[usize]>,
+    /// Target indices and weights in configuration order.
+    targets: Box<[(usize, u64)]>,
 
     /// Sum of every target's configured weight.
-    total_weight: i64,
-}
+    total_weight: u64,
 
-/// Mutable per-selector score state.
-#[derive(Debug)]
-struct SelectorState {
-    /// Smooth weighted round-robin scores, one per target.
-    scores: Vec<i64>,
-
-    /// Tier that owns the current score rotation.
-    active_tier: Option<usize>,
-}
-
-/// Group targets by priority and pre-compute each tier's weight total.
-fn build_tiers(targets: &[WeightedTarget]) -> Box<[Tier]> {
-    let mut by_priority: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
-    for (index, target) in targets.iter().enumerate() {
-        by_priority.entry(target.priority).or_default().push(index);
-    }
-    by_priority
-        .into_values()
-        .map(|indices| {
-            let total_weight = indices.iter().fold(0_i64, |total, &index| {
-                let weight = targets.get(index).map_or(0, |target| i64::from(target.weight.get()));
-                total.saturating_add(weight)
-            });
-            Tier {
-                indices: indices.into_boxed_slice(),
-                total_weight,
-            }
-        })
-        .collect()
+    /// Weighted round-robin cursor for this tier.
+    cycle: WeightedCycle,
 }
 
 impl ClusterSelector {
@@ -124,27 +113,29 @@ impl ClusterSelector {
         let fallback = targets
             .first()
             .map_or_else(|| Arc::from(""), |target| Arc::clone(&target.name));
-        let state = SelectorState {
-            scores: vec![0; targets.len()],
-            active_tier: None,
-        };
         Self {
             targets,
             tiers,
             fallback,
-            state: Mutex::new(state),
+            health: OnceLock::new(),
         }
+    }
+
+    /// Resolve every target's health handle from the pipeline registry.
+    pub(crate) fn bind_health(&self, registry: &HealthRegistry) {
+        let handles: HealthHandles = self
+            .targets
+            .iter()
+            .map(|target| registry.get(&*target.name).cloned())
+            .collect();
+        self.health.get_or_init(|| handles);
     }
 
     /// Select a cluster, honoring cluster health when a registry is available.
     ///
     /// Tiers are tried in order, and the first one with an eligible target
-    /// provides the cluster. A tier that cannot serve leaves the scores of
-    /// other tiers alone, so a fallback tier keeps its rotation for the next
-    /// request; a health change that empties a tier spills to the next one
-    /// instead of failing the request. Once a tier serves, targets outside it
-    /// have their scores reset so a skipped tier cannot win later on a stale
-    /// score.
+    /// provides the cluster. A health change that empties a tier spills to the
+    /// next one instead of failing the request.
     ///
     /// Selection is infallible: a route target set is never empty.
     pub(crate) fn select(&self, registry: Option<&HealthRegistry>) -> Arc<str> {
@@ -153,8 +144,8 @@ impl ClusterSelector {
 
     /// Try each tier in order, then fan out to the primary tier in panic mode.
     fn try_select(&self, registry: Option<&HealthRegistry>) -> Option<Arc<str>> {
-        for (tier_index, tier) in self.tiers.iter().enumerate() {
-            if let Some(cluster) = self.weighted_select(tier_index, tier, registry) {
+        for tier in &self.tiers {
+            if let Some(cluster) = self.select_from_tier(tier, registry) {
                 return Some(cluster);
             }
         }
@@ -163,12 +154,13 @@ impl ClusterSelector {
         // target, so use the highest-priority tier regardless of health and let
         // the downstream load balancer panic too.
         let tier = self.tiers.first()?;
-        self.weighted_select(0, tier, None)
+        self.select_from_tier(tier, None)
     }
 
     /// Whether a target's cluster can serve traffic.
     ///
-    /// No registry, or a cluster absent from it, means "eligible": untracked
+    /// A bound health handle wins over the request-scoped registry. No handle,
+    /// or a cluster absent from the registry, means "eligible": untracked
     /// clusters are not health-gated. A tracked cluster needs at least one
     /// healthy endpoint. Total endpoint count is not otherwise weighed here;
     /// endpoint capacity and overprovisioning stay in the load balancer.
@@ -176,6 +168,12 @@ impl ClusterSelector {
         let Some(target) = self.targets.get(index) else {
             return false;
         };
+        if let Some(handles) = self.health.get() {
+            return handles
+                .get(index)
+                .and_then(Option::as_ref)
+                .is_none_or(|entry| entry.endpoint_counts().0 > 0);
+        }
         let Some(registry) = registry else {
             return true;
         };
@@ -184,70 +182,60 @@ impl ClusterSelector {
             .is_none_or(|state| state.endpoint_counts().0 > 0)
     }
 
-    /// Smooth weighted round-robin across one pre-computed tier.
-    ///
-    /// `registry: None` disables eligibility filtering (panic mode). A tier
-    /// with no eligible target returns `None` without touching the scores of
-    /// other tiers: the caller may try a lower tier next, and resetting that
-    /// tier here would restart its rotation on every request. When a different
-    /// tier starts serving, all scores are reset once so a target that was
-    /// skipped, or left an inactive tier, cannot win later on a stale score.
-    fn weighted_select(&self, tier_index: usize, tier: &Tier, registry: Option<&HealthRegistry>) -> Option<Arc<str>> {
-        if !tier.indices.iter().any(|&index| self.eligible(index, registry)) {
-            return None;
-        }
-        // Recover a poisoned lock: scores are advisory, and failing the request
-        // would be worse than continuing with possibly inconsistent state.
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if state.active_tier != Some(tier_index) {
-            state.scores.fill(0);
-            state.active_tier = Some(tier_index);
-        }
-        let winner_index = self.award_scores(&mut state, tier, registry)?;
-        drop(state);
-        self.targets.get(winner_index).map(|target| Arc::clone(&target.name))
+    /// Weighted round-robin across one pre-computed tier.
+    fn select_from_tier(&self, tier: &Tier, registry: Option<&HealthRegistry>) -> Option<Arc<str>> {
+        let total = self.eligible_weight(tier, registry)?;
+        let slot = tier.cycle.next().checked_rem(total)?;
+        let winner = pick_weighted(
+            slot,
+            tier.targets
+                .iter()
+                .filter_map(|&(index, weight)| self.eligible(index, registry).then_some((index, weight))),
+        )?;
+        self.targets.get(winner).map(|target| Arc::clone(&target.name))
     }
 
-    /// Update the active tier's scores and return its winner.
-    fn award_scores(&self, state: &mut SelectorState, tier: &Tier, registry: Option<&HealthRegistry>) -> Option<usize> {
+    /// Sum the weights of the tier's eligible targets.
+    fn eligible_weight(&self, tier: &Tier, registry: Option<&HealthRegistry>) -> Option<u64> {
         let mut total = tier.total_weight;
-        let mut best: Option<(usize, i64)> = None;
-
-        for &index in &tier.indices {
-            let weight = self
-                .targets
-                .get(index)
-                .map_or(0, |target| i64::from(target.weight.get()));
-            if !self.eligible(index, registry) {
-                if let Some(score) = state.scores.get_mut(index) {
-                    *score = 0;
-                }
+        let mut any = false;
+        for &(index, weight) in &tier.targets {
+            if self.eligible(index, registry) {
+                any = true;
+            } else {
                 total = total.saturating_sub(weight);
-                continue;
-            }
-            let score = state.scores.get(index).copied().unwrap_or(0).saturating_add(weight);
-            if let Some(slot) = state.scores.get_mut(index) {
-                *slot = score;
-            }
-            if best.is_none_or(|(_, best_score)| score > best_score) {
-                best = Some((index, score));
             }
         }
-
-        let (winner_index, _) = best?;
-        if let Some(score) = state.scores.get_mut(winner_index) {
-            *score = score.saturating_sub(total);
-        }
-        Some(winner_index)
+        any.then_some(total)
     }
+}
 
-    /// Read a target's current smooth-WRR score (tests only).
-    #[cfg(test)]
-    fn score_of(&self, name: &str) -> Option<i64> {
-        let index = self.targets.iter().position(|target| &*target.name == name)?;
-        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        state.scores.get(index).copied()
+/// Group targets by priority and pre-compute each tier's weights and total.
+fn build_tiers(targets: &[WeightedTarget]) -> Box<[Tier]> {
+    let mut by_priority: std::collections::BTreeMap<u32, Vec<usize>> = std::collections::BTreeMap::new();
+    for (index, target) in targets.iter().enumerate() {
+        by_priority.entry(target.priority).or_default().push(index);
     }
+    by_priority
+        .into_values()
+        .map(|indices| {
+            let tier_targets: Box<[(usize, u64)]> = indices
+                .into_iter()
+                .map(|index| {
+                    let weight = targets.get(index).map_or(0, |target| u64::from(target.weight.get()));
+                    (index, weight)
+                })
+                .collect();
+            let total_weight = tier_targets
+                .iter()
+                .fold(0_u64, |total, &(_, weight)| total.saturating_add(weight));
+            Tier {
+                targets: tier_targets,
+                total_weight,
+                cycle: WeightedCycle::new(),
+            }
+        })
+        .collect()
 }
 
 // -----------------------------------------------------------------------------
@@ -266,10 +254,7 @@ impl ClusterSelector {
 mod tests {
     use std::collections::HashMap;
 
-    use praxis_core::{
-        config::TargetWeight,
-        health::{ClusterHealthEntry, EndpointHealth},
-    };
+    use praxis_core::{config::TargetWeight, health::EndpointHealth};
 
     use super::*;
 
@@ -363,7 +348,7 @@ mod tests {
         assert_eq!(
             seen.get("dr-a"),
             Some(&5),
-            "the failover tier must keep its smooth-WRR rotation: {seen:?}"
+            "the failover tier must keep its rotation: {seen:?}"
         );
         assert_eq!(
             seen.get("dr-b"),
@@ -429,31 +414,16 @@ mod tests {
     }
 
     #[test]
-    fn ineligible_target_forfeits_its_stale_score() {
+    fn bound_health_handles_win_over_the_request_registry() {
         let selector = ClusterSelector::new(vec![target("a", 1, 0), target("b", 1, 0)]);
-        let both_healthy = registry(&[("a", 1, &[]), ("b", 1, &[])]);
+        let healthy = registry(&[("a", 1, &[]), ("b", 1, &[])]);
+        selector.bind_health(&healthy);
 
-        // The opening tie goes to `a`, which pays the tier total and starts the
-        // next turn with a negative score.
-        assert_eq!(&*selector.select(Some(&both_healthy)), "a");
-        assert!(
-            selector.score_of("a").is_some_and(|score| score < 0),
-            "the winner should carry a negative score into the next turn"
-        );
-
-        // While `a` is unhealthy every turn goes to `b`; `a`'s score must be
-        // reset rather than kept for its recovery.
-        let only_b = registry(&[("a", 1, &[0]), ("b", 1, &[])]);
-        assert_eq!(&*selector.select(Some(&only_b)), "b");
-        assert_eq!(
-            selector.score_of("a"),
-            Some(0),
-            "an ineligible target must not carry its old score"
-        );
-
-        // `b` holds the higher score after the reset, so it wins the first
-        // recovered turn and `a` follows on the next one.
-        assert_eq!(&*selector.select(Some(&both_healthy)), "b");
-        assert_eq!(&*selector.select(Some(&both_healthy)), "a");
+        // A later registry marks `a` dead, but the selector keeps the handles
+        // resolved when the pipeline was installed.
+        let dead = registry(&[("a", 1, &[0]), ("b", 1, &[])]);
+        let seen = counts(&selector, Some(&dead), 10);
+        assert_eq!(seen.get("a"), Some(&5), "bound health must win: {seen:?}");
+        assert_eq!(seen.get("b"), Some(&5), "bound health must win: {seen:?}");
     }
 }
