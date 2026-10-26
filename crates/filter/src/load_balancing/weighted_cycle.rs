@@ -60,6 +60,56 @@ where
     None
 }
 
+/// Total weight of the candidates `eligible` accepts.
+fn eligible_weight<I, F>(candidates: I, eligible: F) -> u64
+where
+    I: IntoIterator<Item = (usize, u64)>,
+    F: Fn(usize) -> bool,
+{
+    candidates
+        .into_iter()
+        .filter(|(index, _)| eligible(*index))
+        .fold(0_u64, |total, (_, weight)| total.saturating_add(weight))
+}
+
+/// Pick a candidate from `candidates`, considering only entries `eligible`
+/// accepts.
+///
+/// `tick` is the raw round-robin turn, reduced modulo the eligible weight total
+/// here so a health change redistributes without biasing the cycle. `candidates`
+/// is iterated twice, so pass a cheaply cloneable iterator (a slice iterator or
+/// `iter().copied()`).
+pub(crate) fn pick_weighted_matching<I, F>(tick: u64, candidates: I, eligible: F) -> Option<usize>
+where
+    I: IntoIterator<Item = (usize, u64)> + Clone,
+    F: Fn(usize) -> bool,
+{
+    let total = eligible_weight(candidates.clone(), &eligible);
+    if total == 0 {
+        return None;
+    }
+    let slot = tick.checked_rem(total)?;
+    pick_weighted(slot, candidates.into_iter().filter(|(index, _)| eligible(*index)))
+}
+
+/// Advance `cycle` and pick an eligible candidate.
+///
+/// Unlike [`pick_weighted_matching`], this does not consume a turn when no
+/// candidate is eligible, so a health-gated caller can probe a tier before
+/// falling back to panic mode without shifting that tier's rotation.
+pub(crate) fn pick_weighted_cycle<I, F>(cycle: &WeightedCycle, candidates: I, eligible: F) -> Option<usize>
+where
+    I: IntoIterator<Item = (usize, u64)> + Clone,
+    F: Fn(usize) -> bool,
+{
+    let total = eligible_weight(candidates.clone(), &eligible);
+    if total == 0 {
+        return None;
+    }
+    let slot = cycle.next().checked_rem(total)?;
+    pick_weighted(slot, candidates.into_iter().filter(|(index, _)| eligible(*index)))
+}
+
 // -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------
@@ -92,6 +142,43 @@ mod tests {
             pick_weighted(9, [(0, 1_u64), (1, 1_u64)]),
             None,
             "a slot outside the cumulative total is invalid"
+        );
+    }
+
+    #[test]
+    fn matching_skips_ineligible_candidates() {
+        let candidates = [(0, 5_u64), (1, 1_u64), (2, 1_u64)];
+        let picks: Vec<usize> = (0..7)
+            .filter_map(|tick| pick_weighted_matching(tick, candidates, |index| index != 0))
+            .collect();
+        assert_eq!(
+            picks,
+            vec![1, 2, 1, 2, 1, 2, 1],
+            "only the eligible candidates share the cycle"
+        );
+    }
+
+    #[test]
+    fn matching_without_eligible_candidates_selects_nothing() {
+        assert_eq!(
+            pick_weighted_matching(3, [(0, 1_u64), (1, 1_u64)], |_| false),
+            None,
+            "an empty eligible set cannot select"
+        );
+    }
+
+    #[test]
+    fn failed_cycle_attempt_does_not_consume_a_turn() {
+        let cycle = WeightedCycle::new();
+        assert_eq!(
+            pick_weighted_cycle(&cycle, [(0, 1_u64), (1, 1_u64)], |_| false),
+            None,
+            "no eligible candidate means no selection"
+        );
+        assert_eq!(
+            pick_weighted_cycle(&cycle, [(0, 1_u64), (1, 1_u64)], |_| true),
+            Some(0),
+            "the failed attempt must not shift the rotation"
         );
     }
 }

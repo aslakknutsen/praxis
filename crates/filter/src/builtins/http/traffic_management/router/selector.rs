@@ -21,7 +21,7 @@ use praxis_core::{
     health::{ClusterHealthEntry, HealthRegistry},
 };
 
-use crate::load_balancing::weighted_cycle::{WeightedCycle, pick_weighted};
+use crate::load_balancing::weighted_cycle::{WeightedCycle, pick_weighted_cycle};
 
 // -----------------------------------------------------------------------------
 // CompiledTargets
@@ -92,14 +92,11 @@ pub(crate) struct ClusterSelector {
     health: Option<HealthHandles>,
 }
 
-/// One priority tier and its pre-computed weight total.
+/// One priority tier.
 #[derive(Debug)]
 struct Tier {
     /// Target indices and weights in configuration order.
     targets: Box<[(usize, u64)]>,
-
-    /// Sum of every target's configured weight.
-    total_weight: u64,
 
     /// Weighted round-robin cursor for this tier.
     cycle: WeightedCycle,
@@ -180,29 +177,10 @@ impl ClusterSelector {
 
     /// Weighted round-robin across one pre-computed tier.
     fn select_from_tier(&self, tier: &Tier, require_health: bool) -> Option<Arc<str>> {
-        let total = self.eligible_weight(tier, require_health)?;
-        let slot = tier.cycle.next().checked_rem(total)?;
-        let winner = pick_weighted(
-            slot,
-            tier.targets
-                .iter()
-                .filter_map(|&(index, weight)| self.eligible(index, require_health).then_some((index, weight))),
-        )?;
+        let winner = pick_weighted_cycle(&tier.cycle, tier.targets.iter().copied(), |index| {
+            self.eligible(index, require_health)
+        })?;
         self.targets.get(winner).map(|target| target.name.shared())
-    }
-
-    /// Sum the weights of the tier's eligible targets.
-    fn eligible_weight(&self, tier: &Tier, require_health: bool) -> Option<u64> {
-        let mut total = tier.total_weight;
-        let mut any = false;
-        for &(index, weight) in &tier.targets {
-            if self.eligible(index, require_health) {
-                any = true;
-            } else {
-                total = total.saturating_sub(weight);
-            }
-        }
-        any.then_some(total)
     }
 }
 
@@ -222,12 +200,8 @@ fn build_tiers(targets: &[WeightedTarget]) -> Box<[Tier]> {
                     (index, weight)
                 })
                 .collect();
-            let total_weight = tier_targets
-                .iter()
-                .fold(0_u64, |total, &(_, weight)| total.saturating_add(weight));
             Tier {
                 targets: tier_targets,
-                total_weight,
                 cycle: WeightedCycle::new(),
             }
         })

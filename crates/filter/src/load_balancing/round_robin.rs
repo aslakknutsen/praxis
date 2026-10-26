@@ -11,7 +11,7 @@ use super::{
     endpoint::WeightedEndpoint,
     is_excluded,
     slow_start::{self, EffectiveWeights},
-    weighted_cycle::{WeightedCycle, pick_weighted},
+    weighted_cycle::{WeightedCycle, pick_weighted_matching},
 };
 
 // -----------------------------------------------------------------------------
@@ -145,20 +145,13 @@ impl RoundRobin {
     where
         F: Fn(&WeightedEndpoint) -> bool,
     {
-        let total = self
-            .endpoints
-            .iter()
-            .filter(|endpoint| candidate(endpoint))
-            .fold(0_u64, |total, endpoint| {
-                total.saturating_add(u64::from(endpoint.weight))
-            });
-        let slot = tick.checked_rem(total)?;
-        let index = pick_weighted(
-            slot,
+        let index = pick_weighted_matching(
+            tick,
             self.endpoints
                 .iter()
                 .enumerate()
-                .filter_map(|(index, endpoint)| candidate(endpoint).then_some((index, u64::from(endpoint.weight)))),
+                .map(|(index, endpoint)| (index, u64::from(endpoint.weight))),
+            |index| self.endpoints.get(index).is_some_and(&candidate),
         )?;
         self.endpoints.get(index).map(|endpoint| Arc::clone(&endpoint.address))
     }
