@@ -5,7 +5,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use praxis_core::config::{PathMatch, Route, RouteTarget, WeightedClusters};
+use praxis_core::config::{PathMatch, Route, RouteTargets, WeightedClusters, route_label};
 use serde::Deserialize;
 
 // -----------------------------------------------------------------------------
@@ -163,7 +163,8 @@ impl TryFrom<RouterRouteConfigRaw> for RouterRouteConfig {
 
     fn try_from(raw: RouterRouteConfigRaw) -> Result<Self, Self::Error> {
         let path_match = PathMatch::from_parts(raw.path, raw.path_prefix)?;
-        let target = RouteTarget::from_parts(raw.cluster, raw.weighted_clusters, path_match.value())?;
+        let label = route_label(path_match.value(), raw.host.as_deref(), raw.headers.as_ref());
+        let target = RouteTargets::from_parts(raw.cluster, raw.weighted_clusters, &label)?;
         let route = Route {
             path_match,
             target,

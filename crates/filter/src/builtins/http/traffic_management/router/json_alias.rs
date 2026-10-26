@@ -297,9 +297,7 @@ mod tests {
                 },
                 host: None,
                 headers: None,
-                target: praxis_core::config::RouteTarget::Single {
-                    cluster: Arc::from("test"),
-                },
+                target: praxis_core::config::RouteTargets::single("test"),
                 retry_policy: None,
                 hedge_policy: None,
             },

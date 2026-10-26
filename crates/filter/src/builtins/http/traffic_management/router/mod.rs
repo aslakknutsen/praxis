@@ -34,7 +34,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use http::header::HeaderName;
-use praxis_core::config::{PathMatch, Route, RouteTarget};
+use praxis_core::config::{PathMatch, Route};
 use tracing::{debug, info, trace, warn};
 
 #[cfg(feature = "router-json-aliases")]
@@ -177,9 +177,9 @@ impl ResolvedRoute {
     ///
     /// `None` for a weighted route, which must go through the selector.
     fn single_cluster(&self) -> Option<&Arc<str>> {
-        match &self.route.target {
-            RouteTarget::Single { cluster } => Some(cluster),
-            RouteTarget::Weighted { .. } => None,
+        match self.route.targets() {
+            [target] => Some(&target.name),
+            _ => None,
         }
     }
 }
@@ -591,7 +591,7 @@ fn resolve_routes(routes: Vec<RouterRouteConfig>) -> Vec<ResolvedRoute> {
             });
             let retry_policy = route.retry_policy.clone().map(Arc::new);
             let hedge_policy = route.hedge_policy.clone().map(Arc::new);
-            let selector = ClusterSelector::new(route.targets());
+            let selector = ClusterSelector::new(route.targets().to_vec());
             ResolvedRoute {
                 route,
                 metrics_label,
@@ -667,7 +667,7 @@ impl HttpFilter for RouterFilter {
     fn selected_clusters(&self) -> Vec<String> {
         self.routes
             .iter()
-            .flat_map(|route| route.route.target_names().map(ToString::to_string))
+            .flat_map(|route| route.route.targets().iter().map(|target| target.name.to_string()))
             .collect()
     }
 

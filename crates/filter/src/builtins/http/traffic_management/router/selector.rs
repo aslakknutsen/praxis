@@ -126,7 +126,10 @@ impl ClusterSelector {
                 *score = 0;
                 continue;
             }
-            let weight = self.targets.get(index).map_or(0, |target| i64::from(target.weight));
+            let weight = self
+                .targets
+                .get(index)
+                .map_or(0, |target| i64::from(target.weight.get()));
             *score = score.saturating_add(weight);
             total = total.saturating_add(weight);
             if best.is_none_or(|(_, best_score)| *score > best_score) {
@@ -167,14 +170,17 @@ impl ClusterSelector {
 mod tests {
     use std::collections::HashMap;
 
-    use praxis_core::health::{ClusterHealthEntry, EndpointHealth};
+    use praxis_core::{
+        config::TargetWeight,
+        health::{ClusterHealthEntry, EndpointHealth},
+    };
 
     use super::*;
 
-    fn target(name: &str, weight: u32, priority: u32) -> WeightedTarget {
+    fn target(name: &str, weight: u16, priority: u32) -> WeightedTarget {
         WeightedTarget {
             name: Arc::from(name),
-            weight,
+            weight: TargetWeight::try_from(weight).unwrap(),
             priority,
         }
     }

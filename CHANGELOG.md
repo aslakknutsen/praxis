@@ -39,11 +39,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Changed
 
 - **Breaking:** Rust API: `Route::cluster` is replaced by `Route::target`, a
-  `RouteTarget` holding either the `cluster` shorthand or the
-  `weighted_clusters` target set. Rust consumers that build `Route` values
+  `RouteTargets` set normalized from either the `cluster` shorthand or the
+  `weighted_clusters` target list. Rust consumers that build `Route` values
   with struct literals or read `cluster` directly must move to `target`;
-  `Route::single_cluster()` reads the shorthand's cluster name. The YAML
-  `cluster:` key is unchanged.
+  `Route::targets()` returns the canonical target slice. The YAML `cluster:`
+  key is unchanged.
 
 ### Fixed
 
