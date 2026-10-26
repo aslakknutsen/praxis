@@ -661,10 +661,10 @@ impl HttpFilter for RouterFilter {
         true
     }
 
-    fn selected_clusters(&self) -> Vec<String> {
+    fn selected_clusters(&self) -> Vec<&str> {
         self.routes
             .iter()
-            .flat_map(|route| route.route.targets().iter().map(|target| target.name.to_string()))
+            .flat_map(|route| route.route.targets().iter().map(|target| target.name.as_ref()))
             .collect()
     }
 
@@ -709,7 +709,7 @@ impl HttpFilter for RouterFilter {
             debug!(path = %path, "no route matched");
             return Ok(FilterAction::Reject(Rejection::status(404)));
         };
-        debug!(path = %path, route = %resolved.route.path_match.value(), "route matched");
+        trace!(path = %path, route = %resolved.route.path_match.value(), "route matched");
         Ok(self.apply_matched_route(ctx, resolved))
     }
 }

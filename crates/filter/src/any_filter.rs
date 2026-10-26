@@ -78,7 +78,7 @@ impl AnyFilter {
     }
 
     /// Cluster names this filter may assign.
-    pub fn selected_clusters(&self) -> Vec<String> {
+    pub fn selected_clusters(&self) -> Vec<&str> {
         match self {
             Self::Http(f) => f.selected_clusters(),
             Self::Tcp(_) => Vec::new(),
@@ -183,7 +183,7 @@ mod tests {
         assert!(f.selects_cluster(), "Http variant should delegate selects_cluster");
         assert_eq!(
             f.selected_clusters(),
-            vec!["web".to_owned()],
+            vec!["web"],
             "Http variant should delegate selected_clusters"
         );
         assert_eq!(
@@ -307,8 +307,8 @@ mod tests {
             true
         }
 
-        fn selected_clusters(&self) -> Vec<String> {
-            vec!["web".to_owned()]
+        fn selected_clusters(&self) -> Vec<&str> {
+            vec!["web"]
         }
 
         fn load_balancer_clusters(&self) -> Vec<String> {

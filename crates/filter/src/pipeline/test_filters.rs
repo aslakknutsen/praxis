@@ -200,8 +200,8 @@ impl HttpFilter for CapabilityFilter {
         self.selects_cluster
     }
 
-    fn selected_clusters(&self) -> Vec<String> {
-        self.selected_clusters.clone()
+    fn selected_clusters(&self) -> Vec<&str> {
+        self.selected_clusters.iter().map(String::as_str).collect()
     }
 
     fn load_balancer_clusters(&self) -> Vec<String> {

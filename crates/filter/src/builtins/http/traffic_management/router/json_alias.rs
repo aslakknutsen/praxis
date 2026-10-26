@@ -108,8 +108,6 @@ fn best_alias_in_route<'a>(
     reason = "tests"
 )]
 mod tests {
-    use std::sync::Arc;
-
     use praxis_core::config::{PathMatch, Route};
 
     use super::*;

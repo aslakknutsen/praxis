@@ -324,13 +324,13 @@ pub(in crate::pipeline) fn check_bound_cluster_coverage(filters: &[PipelineFilte
         return;
     };
     let covered = covered_bound_clusters(filters);
-    let mut bindable: Vec<String> = filters
+    let mut bindable: Vec<&str> = filters
         .get(router)
         .map(|pf| pf.filter.selected_clusters())
         .unwrap_or_default();
-    bindable.sort();
+    bindable.sort_unstable();
     bindable.dedup();
-    for cluster in bindable.into_iter().filter(|cluster| !covered.contains(cluster)) {
+    for cluster in bindable.into_iter().filter(|cluster| !covered.contains(*cluster)) {
         errors.push(format!(
             "cluster '{cluster}' can be bound as the logical upstream but no \
              guaranteed load_balancer can serve it on its reachable path; \
@@ -346,7 +346,7 @@ pub(in crate::pipeline) fn check_bound_cluster_coverage(filters: &[PipelineFilte
 pub(super) fn binding_router_clusters(filters: &[PipelineFilter]) -> std::collections::HashSet<String> {
     binding_router_index(filters)
         .and_then(|router| filters.get(router))
-        .map(|pf| pf.filter.selected_clusters().into_iter().collect())
+        .map(|pf| pf.filter.selected_clusters().into_iter().map(str::to_owned).collect())
         .unwrap_or_default()
 }
 
@@ -362,6 +362,7 @@ fn covered_bound_clusters(filters: &[PipelineFilter]) -> std::collections::HashS
         .unwrap_or_default()
         .into_iter()
         .filter(|cluster| ClusterScan::new(cluster, catalog.lookup(cluster), true).covers(filters, router))
+        .map(str::to_owned)
         .collect()
 }
 

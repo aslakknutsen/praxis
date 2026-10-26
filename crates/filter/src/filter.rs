@@ -165,7 +165,7 @@ pub trait HttpFilter: Send + Sync {
     /// can verify that downstream load balancers define matching
     /// clusters. Filters without static cluster targets can leave the
     /// default empty list.
-    fn selected_clusters(&self) -> Vec<String> {
+    fn selected_clusters(&self) -> Vec<&str> {
         Vec::new()
     }
 

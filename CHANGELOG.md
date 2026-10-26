@@ -44,6 +44,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   with struct literals or read `cluster` directly must move to `target`;
   `Route::targets()` returns the canonical target slice. The YAML `cluster:`
   key is unchanged.
+- **Breaking:** Rust API: `HttpFilter::selected_clusters` now returns
+  `Vec<&str>` instead of `Vec<String>`, so a filter borrows its configured
+  cluster names instead of allocating them. Custom filters must update the
+  return type; pipeline checks copy names only where they build owned sets.
 
 ### Fixed
 
