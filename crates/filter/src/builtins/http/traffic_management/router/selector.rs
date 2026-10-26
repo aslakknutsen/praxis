@@ -175,7 +175,7 @@ impl ClusterSelector {
             .as_ref()
             .and_then(|handles| handles.get(index))
             .and_then(Option::as_ref)
-            .is_none_or(|entry| entry.endpoint_counts().0 > 0)
+            .is_none_or(|entry| entry.has_healthy_endpoint())
     }
 
     /// Weighted round-robin across one pre-computed tier.

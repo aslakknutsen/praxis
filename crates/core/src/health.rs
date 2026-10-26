@@ -356,6 +356,14 @@ impl ClusterHealthEntry {
             .is_none_or(EndpointHealth::is_healthy)
     }
 
+    /// Whether at least one endpoint is healthy.
+    ///
+    /// Stops at the first healthy endpoint, so a health-gated selector does
+    /// not have to count the whole cluster to decide whether it can serve.
+    pub fn has_healthy_endpoint(&self) -> bool {
+        self.endpoints.iter().any(EndpointHealth::is_healthy)
+    }
+
     /// Return `(healthy, total)` endpoint counts for this cluster.
     pub fn endpoint_counts(&self) -> (usize, usize) {
         let total = self.endpoints.len();
@@ -638,6 +646,21 @@ mod tests {
             (2, 3),
             "should count two healthy out of three endpoints"
         );
+    }
+
+    #[test]
+    fn cluster_health_entry_has_healthy_endpoint() {
+        let entry = ClusterHealthEntry::new(
+            vec![EndpointHealth::new(), EndpointHealth::new()],
+            vec![Arc::from("10.0.0.1:80"), Arc::from("10.0.0.2:80")],
+            None,
+            None,
+        );
+        assert!(entry.has_healthy_endpoint(), "a new cluster can serve");
+        entry.endpoints()[0].mark_unhealthy();
+        assert!(entry.has_healthy_endpoint(), "one healthy endpoint is enough");
+        entry.endpoints()[1].mark_unhealthy();
+        assert!(!entry.has_healthy_endpoint(), "an all-unhealthy cluster cannot serve");
     }
 
     #[test]
