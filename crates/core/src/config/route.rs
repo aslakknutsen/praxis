@@ -279,9 +279,9 @@ pub struct RouteTargets(Arc<[WeightedTarget]>);
 
 impl RouteTargets {
     /// Build the single-target shorthand.
-    pub fn single<T: Into<ClusterName>>(cluster: T) -> Self {
+    pub fn single(cluster: ClusterName) -> Self {
         Self(Arc::from([WeightedTarget {
-            name: cluster.into(),
+            name: cluster,
             weight: TargetWeight::DEFAULT,
             priority: 0,
         }]))
@@ -386,7 +386,7 @@ impl Serialize for RouteTargets {
 
 impl From<&str> for RouteTargets {
     fn from(cluster: &str) -> Self {
-        Self::single(cluster)
+        Self::single(cluster.into())
     }
 }
 
@@ -451,7 +451,7 @@ const MAX_TOTAL_TARGET_WEIGHT: u64 = 2_147_483_647; // i32::MAX
 /// that tier.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct WeightedClusters {
+struct WeightedClusters {
     /// Cluster targets. Must not be empty.
     pub targets: Vec<WeightedTarget>,
 }
@@ -681,7 +681,7 @@ impl Route {
 ///
 /// Header match values are omitted: they may hold credentials, and the name
 /// alone separates the routes.
-pub fn route_label(path: &str, host: Option<&str>, headers: Option<&HashMap<String, String>>) -> String {
+fn route_label(path: &str, host: Option<&str>, headers: Option<&HashMap<String, String>>) -> String {
     let mut details = Vec::new();
     if let Some(host) = host {
         details.push(format!("host '{host}'"));
@@ -926,7 +926,7 @@ retry_policy:
             path_match: PathMatch::Prefix {
                 path_prefix: "/api".to_owned(),
             },
-            target: RouteTargets::single("backend"),
+            target: RouteTargets::single("backend".into()),
             headers: None,
             host: None,
             retry_policy: None,

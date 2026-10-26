@@ -295,7 +295,7 @@ mod tests {
                 },
                 host: None,
                 headers: None,
-                target: praxis_core::config::RouteTargets::single("test"),
+                target: praxis_core::config::RouteTargets::single("test".into()),
                 retry_policy: None,
                 hedge_policy: None,
             },

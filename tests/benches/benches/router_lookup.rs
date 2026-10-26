@@ -93,7 +93,7 @@ fn make_routes(n: usize) -> Vec<Route> {
             },
             host: None,
             headers: None,
-            target: RouteTargets::single(format!("cluster-{i}")),
+            target: RouteTargets::single(format!("cluster-{i}").into()),
             retry_policy: None,
             hedge_policy: None,
         })
