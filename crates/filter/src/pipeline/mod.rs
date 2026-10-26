@@ -528,12 +528,19 @@ impl FilterPipeline {
     }
 
     /// Set the shared [`HealthRegistry`] for this pipeline.
+    ///
+    /// Filters are bound even when the registry is empty: install-time
+    /// diagnostics (for example a failover tier that no health check can
+    /// mark down) must see the same empty registry the router will, instead of
+    /// being skipped because no cluster declares a health check.
     pub fn set_health_registry(&mut self, registry: HealthRegistry) {
         self.visit_nested_pipelines(&mut |pipeline| pipeline.set_health_registry(Arc::clone(&registry)));
         for_each_pipeline_filter_mut(&mut self.filters, &mut |filter| {
             filter.filter.bind_health(&registry);
         });
-        self.health_registry = Some(registry);
+        if !registry.is_empty() {
+            self.health_registry = Some(registry);
+        }
     }
 
     /// Enable or disable recording of per-filter duration metrics.
